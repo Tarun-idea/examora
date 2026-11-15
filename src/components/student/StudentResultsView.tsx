@@ -26,12 +26,48 @@ export const StudentResultsView: React.FC<StudentResultsViewProps> = ({
   const [downloadNotice, setDownloadNotice] = useState<string | null>(null);
   const [qrDataUrl, setQrDataUrl] = useState<string>('');
 
-  // If student passed, find or auto-attach their certificate
-  const certificate =
+  // If student passed, find their certificate or synthesize a pure fallback while ensuring issuance in useEffect
+  const existingCertificate =
     attempt && attempt.passed
-      ? state.certificates.find((c) => c.attemptId === attempt.id) ||
-        examStore.ensureCertificateIssued(attempt, true)
+      ? state.certificates.find((c) => c.attemptId === attempt.id)
       : undefined;
+
+  useEffect(() => {
+    if (attempt && attempt.passed && !existingCertificate) {
+      examStore.ensureCertificateIssued(attempt, true);
+    }
+  }, [attempt, existingCertificate]);
+
+  const certificate =
+    existingCertificate ||
+    (attempt && attempt.passed
+      ? {
+          id: `cert-${attempt.id}`,
+          certificateNumber: `EF-2026-${attempt.subjectName.slice(0, 3).toUpperCase()}-001`,
+          attemptId: attempt.id,
+          examId: attempt.examId,
+          examTitle: attempt.examTitle,
+          subjectName: attempt.subjectName,
+          studentId: attempt.studentId,
+          studentName: attempt.studentName,
+          studentRegId: attempt.studentRegId,
+          score: attempt.totalScore,
+          maxScore: attempt.maxScore,
+          percentage: attempt.percentage,
+          grade:
+            attempt.percentage >= 90
+              ? 'A+ (Distinction)'
+              : attempt.percentage >= 80
+              ? 'A (First Class)'
+              : attempt.percentage >= 70
+              ? 'B+ (Merit)'
+              : 'B (Pass)',
+          issuedAt: (attempt.publishedAt || attempt.submittedAt || attempt.startedAt).split('T')[0],
+          publishedToStudent: true,
+          customRemarks:
+            'Awarded for passing the proctored examination with verified distinction.',
+        }
+      : undefined);
   const tpl = state.certificateTemplate;
 
   const studentSection =

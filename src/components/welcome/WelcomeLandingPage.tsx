@@ -1,11 +1,10 @@
-import React, { useState } from 'react';
+import React from 'react';
 import {
   Play,
   ArrowRight,
   Zap,
   TrendingUp,
   Trophy,
-  Search,
   BarChart3,
 } from 'lucide-react';
 import { examStore } from '../../services/examStore.ts';
@@ -21,12 +20,6 @@ export const WelcomeLandingPage: React.FC<WelcomeLandingPageProps> = ({
 }) => {
   const state = examStore.getState();
   const collegeLogoUrl = state.settings.collegeLogoUrl || '';
-  const [searchQuery, setSearchQuery] = useState<string>('');
-
-  const handleSearchSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    onNavigateToLogin('student');
-  };
 
   const scrollToSection = (sectionId: string) => {
     const el = document.getElementById(sectionId);
@@ -44,59 +37,45 @@ export const WelcomeLandingPage: React.FC<WelcomeLandingPageProps> = ({
         <div className="absolute bottom-10 left-1/3 w-[500px] h-[500px] rounded-full bg-indigo-700/20 blur-[140px]" />
       </div>
 
-      {/* Sleek Full-Width Top Navigation Bar */}
+      {/* Prominent Full-Width Top Navigation Bar */}
       <header className="sticky top-0 z-30 border-b border-purple-500/25 bg-[#080A24]/95 backdrop-blur-xl">
-        <div className="max-w-[1520px] mx-auto px-4 sm:px-8 lg:px-10 py-2.5 flex flex-wrap lg:flex-nowrap items-center justify-between gap-4">
-          <InstitutionalHeaderBrand logoUrl={collegeLogoUrl} />
+        <div className="max-w-[1520px] mx-auto px-4 sm:px-8 lg:px-10 py-4 sm:py-5 flex flex-wrap lg:flex-nowrap items-center justify-between gap-6">
+          <InstitutionalHeaderBrand logoUrl={collegeLogoUrl} large />
 
           {/* Quick Header Scroll Links */}
           <nav
             aria-label="Welcome Page Navigation"
-            className="hidden md:flex items-center gap-1.5 bg-[#12163D]/90 border border-purple-500/30 rounded-full px-3 py-1.5"
+            className="hidden md:flex items-center gap-2 bg-[#12163D]/90 border border-purple-500/30 rounded-full px-4 py-2"
           >
             <button
               type="button"
               onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
-              className="px-3.5 py-1.5 rounded-full text-xs font-bold text-slate-200 hover:text-white hover:bg-purple-500/20 transition-colors cursor-pointer"
+              className="px-4 py-1.5 rounded-full text-xs sm:text-sm font-bold text-slate-200 hover:text-white hover:bg-purple-500/20 transition-colors cursor-pointer whitespace-nowrap"
             >
               Home
             </button>
             <button
               type="button"
               onClick={() => scrollToSection('welcome-about-section')}
-              className="px-3.5 py-1.5 rounded-full text-xs font-bold text-purple-200 hover:text-white hover:bg-purple-500/20 transition-colors cursor-pointer"
+              className="px-4 py-1.5 rounded-full text-xs sm:text-sm font-bold text-purple-200 hover:text-white hover:bg-purple-500/20 transition-colors cursor-pointer whitespace-nowrap"
             >
               About &amp; Team
             </button>
             <button
               type="button"
               onClick={() => scrollToSection('welcome-contact-section')}
-              className="px-3.5 py-1.5 rounded-full text-xs font-bold text-cyan-200 hover:text-white hover:bg-purple-500/20 transition-colors cursor-pointer"
+              className="px-4 py-1.5 rounded-full text-xs sm:text-sm font-bold text-cyan-200 hover:text-white hover:bg-purple-500/20 transition-colors cursor-pointer whitespace-nowrap"
             >
               Contact Us
             </button>
           </nav>
 
-          {/* Right Search & Portal Login Buttons */}
-          <div className="flex items-center gap-3 shrink-0">
-            <form
-              onSubmit={handleSearchSubmit}
-              className="relative hidden xl:block w-56"
-            >
-              <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search assessments..."
-                className="w-full pl-9 pr-3 py-2 rounded-full bg-[#12163D] border border-purple-500/35 text-xs text-white placeholder:text-slate-400 focus:outline-none focus:border-cyan-400"
-              />
-            </form>
-
+          {/* Right Portal Login Buttons */}
+          <div className="flex items-center gap-3.5 shrink-0">
             <button
               type="button"
               onClick={() => onNavigateToLogin('student')}
-              className="px-4 py-2 rounded-full bg-[#141844] hover:bg-[#1D225E] border border-purple-500/35 text-xs font-bold text-purple-200 transition-all cursor-pointer whitespace-nowrap"
+              className="px-5 py-2.5 rounded-full bg-[#141844] hover:bg-[#1D225E] border border-purple-500/35 text-xs sm:text-sm font-bold text-purple-200 transition-all cursor-pointer whitespace-nowrap"
             >
               Student Login
             </button>
@@ -104,7 +83,7 @@ export const WelcomeLandingPage: React.FC<WelcomeLandingPageProps> = ({
             <button
               type="button"
               onClick={() => onNavigateToLogin('admin')}
-              className="px-4 py-2 rounded-full bg-gradient-to-r from-[#7C3AED] to-[#4F46E5] hover:from-[#8B5CF6] hover:to-[#6366F1] text-xs font-bold text-white shadow-[0_0_20px_rgba(124,58,237,0.45)] transition-all cursor-pointer whitespace-nowrap"
+              className="px-5 py-2.5 rounded-full bg-gradient-to-r from-[#7C3AED] to-[#4F46E5] hover:from-[#8B5CF6] hover:to-[#6366F1] text-xs sm:text-sm font-bold text-white shadow-[0_0_20px_rgba(124,58,237,0.45)] transition-all cursor-pointer whitespace-nowrap"
             >
               Admin Login
             </button>
@@ -185,7 +164,13 @@ export const WelcomeLandingPage: React.FC<WelcomeLandingPageProps> = ({
                   </div>
                   <div>
                     <div className="text-lg font-extrabold text-white font-mono tabular-nums">
-                      {state.exams.length}
+                      {
+                        state.exams.filter(
+                          (e) =>
+                            String(e.status || '').trim().toLowerCase() !==
+                            'draft'
+                        ).length
+                      }
                     </div>
                     <div className="text-[11px] text-slate-300">
                       Live Examinations

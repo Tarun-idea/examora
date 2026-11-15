@@ -636,14 +636,14 @@ async function startServer() {
   });
 
   const distPath = path.join(__dirname, 'dist');
+  const isTsxDev = process.execArgv.some((arg) => arg.includes('tsx'));
   const isProd =
     process.env.NODE_ENV === 'production' ||
-    (process.env.VITE_DEV_MODE !== 'true' &&
-      fs.existsSync(path.join(distPath, 'index.html')));
+    (!isTsxDev && fs.existsSync(path.join(distPath, 'index.html')));
 
-  if (isProd) {
+  if (isProd && fs.existsSync(path.join(distPath, 'index.html'))) {
     app.use(express.static(distPath));
-    app.get('*', (_req, res) => {
+    app.use((_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   } else {
@@ -660,4 +660,7 @@ async function startServer() {
   });
 }
 
-startServer();
+startServer().catch((err) => {
+  console.error('Failed to start server:', err);
+  process.exit(1);
+});

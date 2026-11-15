@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Award,
   CheckCircle2,
@@ -64,10 +64,12 @@ export const EvaluationStation: React.FC<EvaluationStationProps> = () => {
   const [selectedItemId, setSelectedItemId] = useState<string>(
     state.attempts[0]?.id || ''
   );
-  const [feedbackDraft, setFeedbackDraft] = useState<string>('');
+  const [feedbackDraft, setFeedbackDraft] = useState<string>(
+    state.attempts[0]?.overallFeedback || ''
+  );
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
 
-  // All 26 sections A - Z
+  // All 12 sections A - L
   const availableSections = ALL_SECTIONS;
 
   const getStudentSection = (studentId: string): string => {
@@ -88,10 +90,11 @@ export const EvaluationStation: React.FC<EvaluationStationProps> = () => {
     department: getStudentDept(attempt.studentId),
   }));
 
-  // 2. "Not Completed" entries: students assigned to exams who have not completed them yet
+  // 2. "Not Completed" entries: students assigned to published/scheduled exams who have not completed them yet
   const notCompletedItems: NotCompletedEntry[] = [];
   const seenNotCompletedIds = new Set<string>();
   for (const exam of state.exams) {
+    if (String(exam.status || '').trim().toLowerCase() === 'draft') continue;
     const normalizedExamCohorts = exam.assignedCohorts.map(normalizeSection);
     const assignedStudents = state.students.filter(
       (stu) =>
@@ -216,6 +219,10 @@ export const EvaluationStation: React.FC<EvaluationStationProps> = () => {
 
   const activeAttempt =
     selectedItem?.kind === 'attempt' ? selectedItem.attempt : undefined;
+
+  useEffect(() => {
+    setFeedbackDraft(activeAttempt?.overallFeedback || '');
+  }, [activeAttempt?.id]);
 
   const attemptQuestions = activeAttempt
     ? state.questions.filter((q) => q.examId === activeAttempt.examId)
@@ -697,7 +704,7 @@ export const EvaluationStation: React.FC<EvaluationStationProps> = () => {
               <input
                 id="overall-feedback-input"
                 type="text"
-                value={feedbackDraft || activeAttempt.overallFeedback || ''}
+                value={feedbackDraft}
                 onChange={(e) => setFeedbackDraft(e.target.value)}
                 placeholder="Enter overall assessment feedback for the student..."
                 className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-xs text-slate-900 focus:outline-none focus:border-blue-600"

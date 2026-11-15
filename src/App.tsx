@@ -145,6 +145,8 @@ export function App() {
         setViewingResultAttemptId(null);
       }}
       onLogout={() => {
+        setActiveExamSessionId(null);
+        setViewingResultAttemptId(null);
         examStore.logout();
         setShowWelcomePage(false);
       }}

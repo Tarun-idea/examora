@@ -158,8 +158,11 @@ export const AppSidebarLayout: React.FC<AppSidebarLayoutProps> = ({
 
           {/* Right Header Controls: Date Pill, Notifications & Profile */}
           <div className="flex items-center gap-2.5 sm:gap-3 shrink-0">
-            {/* Current Date Pill (Matching "Mon, Nov 17, 2025" in Template) */}
-            <div className="hidden md:inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-[#131742] border border-purple-500/30 text-xs font-semibold text-slate-200">
+            {/* Current Date Display */}
+            <div
+              title="Academic Calendar Date"
+              className="hidden md:inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-[#131742] border border-purple-500/30 text-xs font-semibold text-slate-200"
+            >
               <Calendar className="w-3.5 h-3.5 text-purple-400" />
               <span>{formattedToday}</span>
             </div>
