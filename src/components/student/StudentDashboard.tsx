@@ -131,14 +131,12 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
   const effectiveSection = normalizeSection(
     currentUser.section || studentRecord?.section || 'A'
   );
-  const rawAssignedExams = visibleStudentExams.filter(
+  const assignedExams = visibleStudentExams.filter(
     (e) =>
       e.assignedStudentIds.includes(currentUser.id) ||
       (studentRecord && e.assignedStudentIds.includes(studentRecord.id)) ||
       e.assignedCohorts.map(normalizeSection).includes(effectiveSection)
   );
-  const assignedExams =
-    rawAssignedExams.length > 0 ? rawAssignedExams : visibleStudentExams;
 
   const myAttempts = state.attempts.filter((a) => {
     const belongsToStudent =

@@ -244,44 +244,241 @@ export const ExamManagement: React.FC<ExamManagementProps> = ({
     return matchesStatus && matchesSearch;
   });
 
-  // Assignment view helpers
+  // Assignment view state & helpers
+  const [matrixSectionFilter, setMatrixSectionFilter] = useState<string>('ALL');
+  const [matrixStudentSearch, setMatrixStudentSearch] = useState<string>('');
+  const [selectedStudentIdsForBulk, setSelectedStudentIdsForBulk] = useState<string[]>(
+    []
+  );
+  const [bulkTargetGroup, setBulkTargetGroup] = useState<string>('A');
+
   const activeAssignExam =
     state.exams.find((e) => e.id === selectedExamForAssign) || state.exams[0];
 
+  const cleanAssignCohorts = activeAssignExam
+    ? normalizeAndDedupeSections(activeAssignExam.assignedCohorts)
+    : [];
+
+  const isStudentAssignedToExam = (
+    exam: Exam | undefined,
+    stu: { id: string; section: string }
+  ) => {
+    if (!exam) return false;
+    const cleanCohorts = normalizeAndDedupeSections(exam.assignedCohorts);
+    return (
+      exam.assignedStudentIds.includes(stu.id) ||
+      cleanCohorts.includes(stu.section)
+    );
+  };
+
+  const isStudentAssignedToActiveExam = (stu: { id: string; section: string }) =>
+    isStudentAssignedToExam(activeAssignExam, stu);
+
+  const assignedStudentsCount = activeAssignExam
+    ? state.students.filter((s) => isStudentAssignedToActiveExam(s)).length
+    : 0;
+
+  const handleToggleStudentForSpecificExam = (
+    examId: string,
+    studentId: string
+  ) => {
+    const targetExam = state.exams.find((e) => e.id === examId);
+    const targetStu = state.students.find((s) => s.id === studentId);
+    if (!targetExam || !targetStu) return;
+
+    const cleanCurrentCohorts = normalizeAndDedupeSections(
+      targetExam.assignedCohorts
+    );
+
+    // Materialize all currently eligible student IDs so unchecking one student in an active section
+    // preserves all other students in that section while removing the full-section cohort flag.
+    const effectiveStudentIds = new Set<string>(targetExam.assignedStudentIds);
+    for (const s of state.students) {
+      if (cleanCurrentCohorts.includes(s.section)) {
+        effectiveStudentIds.add(s.id);
+      }
+    }
+
+    const currentlyAssigned = effectiveStudentIds.has(studentId);
+    let nextCohorts = [...cleanCurrentCohorts];
+
+    if (currentlyAssigned) {
+      effectiveStudentIds.delete(studentId);
+      nextCohorts = cleanCurrentCohorts.filter((c) => c !== targetStu.section);
+      showBannerMessage(
+        `Unassigned ${targetStu.name} (${targetStu.studentId}) from "${targetExam.title}".`
+      );
+    } else {
+      effectiveStudentIds.add(studentId);
+      const sectionPeers = state.students.filter(
+        (s) => s.section === targetStu.section
+      );
+      const allPeersAssigned =
+        sectionPeers.length > 0 &&
+        sectionPeers.every((s) => effectiveStudentIds.has(s.id));
+      if (allPeersAssigned && !nextCohorts.includes(targetStu.section)) {
+        nextCohorts = normalizeAndDedupeSections([
+          ...nextCohorts,
+          targetStu.section,
+        ]);
+      }
+      showBannerMessage(
+        `Assigned ${targetStu.name} (${targetStu.studentId}) to "${targetExam.title}".`
+      );
+    }
+
+    examStore.assignStudentsToExam(
+      targetExam.id,
+      Array.from(effectiveStudentIds),
+      nextCohorts
+    );
+  };
+
   const handleToggleStudentAssignment = (studentId: string) => {
     if (!activeAssignExam) return;
-    const exists = activeAssignExam.assignedStudentIds.includes(studentId);
-    const nextIds = exists
-      ? activeAssignExam.assignedStudentIds.filter((id) => id !== studentId)
-      : [...activeAssignExam.assignedStudentIds, studentId];
-    examStore.assignStudentsToExam(
-      activeAssignExam.id,
-      nextIds,
-      activeAssignExam.assignedCohorts
-    );
+    handleToggleStudentForSpecificExam(activeAssignExam.id, studentId);
   };
 
   const handleToggleCohortAssignment = (cohort: string) => {
     if (!activeAssignExam) return;
     const cleanCurrent = normalizeAndDedupeSections(activeAssignExam.assignedCohorts);
+
+    // Materialize current eligible student IDs first
+    const effectiveStudentIds = new Set<string>(activeAssignExam.assignedStudentIds);
+    for (const s of state.students) {
+      if (cleanCurrent.includes(s.section)) {
+        effectiveStudentIds.add(s.id);
+      }
+    }
+
+    const cohortStudents = state.students.filter((s) => s.section === cohort);
     const exists = cleanCurrent.includes(cohort);
-    const nextCohorts = exists
-      ? cleanCurrent.filter((c) => c !== cohort)
-      : normalizeAndDedupeSections([...cleanCurrent, cohort]);
 
-    // Also include or remove students from that section
-    const cohortStudentIds = state.students
-      .filter((s) => s.section === cohort)
-      .map((s) => s.id);
-    const nextStudentIds = exists
-      ? activeAssignExam.assignedStudentIds.filter(
-          (id) => !cohortStudentIds.includes(id)
-        )
-      : Array.from(
-          new Set([...activeAssignExam.assignedStudentIds, ...cohortStudentIds])
-        );
+    let nextCohorts: string[];
+    if (exists) {
+      nextCohorts = cleanCurrent.filter((c) => c !== cohort);
+      for (const s of cohortStudents) {
+        effectiveStudentIds.delete(s.id);
+      }
+      showBannerMessage(
+        `Unassigned Group / Section ${cohort} (${cohortStudents.length} students) from "${activeAssignExam.title}".`
+      );
+    } else {
+      nextCohorts = normalizeAndDedupeSections([...cleanCurrent, cohort]);
+      for (const s of cohortStudents) {
+        effectiveStudentIds.add(s.id);
+      }
+      showBannerMessage(
+        `Assigned Group / Section ${cohort} (${cohortStudents.length} students) to "${activeAssignExam.title}".`
+      );
+    }
 
-    examStore.assignStudentsToExam(activeAssignExam.id, nextStudentIds, nextCohorts);
+    examStore.assignStudentsToExam(
+      activeAssignExam.id,
+      Array.from(effectiveStudentIds),
+      nextCohorts
+    );
+  };
+
+  const filteredMatrixStudents = state.students.filter((stu) => {
+    const matchesSec =
+      matrixSectionFilter === 'ALL' ? true : stu.section === matrixSectionFilter;
+    const q = matrixStudentSearch.trim().toLowerCase();
+    const matchesSearch =
+      !q ||
+      stu.name.toLowerCase().includes(q) ||
+      stu.studentId.toLowerCase().includes(q) ||
+      stu.department.toLowerCase().includes(q) ||
+      stu.email.toLowerCase().includes(q);
+    return matchesSec && matchesSearch;
+  });
+
+  const toggleBulkSelectStudent = (studentId: string) => {
+    setSelectedStudentIdsForBulk((prev) =>
+      prev.includes(studentId)
+        ? prev.filter((id) => id !== studentId)
+        : [...prev, studentId]
+    );
+  };
+
+  const allFilteredSelectedForBulk =
+    filteredMatrixStudents.length > 0 &&
+    filteredMatrixStudents.every((s) => selectedStudentIdsForBulk.includes(s.id));
+
+  const toggleSelectAllFilteredForBulk = () => {
+    if (allFilteredSelectedForBulk) {
+      const filteredSet = new Set(filteredMatrixStudents.map((s) => s.id));
+      setSelectedStudentIdsForBulk((prev) =>
+        prev.filter((id) => !filteredSet.has(id))
+      );
+    } else {
+      const next = new Set([
+        ...selectedStudentIdsForBulk,
+        ...filteredMatrixStudents.map((s) => s.id),
+      ]);
+      setSelectedStudentIdsForBulk(Array.from(next));
+    }
+  };
+
+  const handleBulkAssignTickedToExam = (assign: boolean) => {
+    if (!activeAssignExam || selectedStudentIdsForBulk.length === 0) return;
+    const cleanCurrentCohorts = normalizeAndDedupeSections(
+      activeAssignExam.assignedCohorts
+    );
+    const effectiveStudentIds = new Set<string>(activeAssignExam.assignedStudentIds);
+    for (const s of state.students) {
+      if (cleanCurrentCohorts.includes(s.section)) {
+        effectiveStudentIds.add(s.id);
+      }
+    }
+
+    let nextCohorts = [...cleanCurrentCohorts];
+    if (assign) {
+      for (const sid of selectedStudentIdsForBulk) {
+        effectiveStudentIds.add(sid);
+      }
+      for (const sec of COHORT_SECTIONS) {
+        const peers = state.students.filter((s) => s.section === sec);
+        if (
+          peers.length > 0 &&
+          peers.every((s) => effectiveStudentIds.has(s.id)) &&
+          !nextCohorts.includes(sec)
+        ) {
+          nextCohorts.push(sec);
+        }
+      }
+      nextCohorts = normalizeAndDedupeSections(nextCohorts);
+      showBannerMessage(
+        `Assigned ${selectedStudentIdsForBulk.length} ticked student(s) to examination "${activeAssignExam.title}".`
+      );
+    } else {
+      const affectedSections = new Set<string>();
+      for (const sid of selectedStudentIdsForBulk) {
+        effectiveStudentIds.delete(sid);
+        const stu = state.students.find((s) => s.id === sid);
+        if (stu) affectedSections.add(stu.section);
+      }
+      nextCohorts = nextCohorts.filter((c) => !affectedSections.has(c));
+      showBannerMessage(
+        `Unassigned ${selectedStudentIdsForBulk.length} ticked student(s) from examination "${activeAssignExam.title}".`
+      );
+    }
+
+    examStore.assignStudentsToExam(
+      activeAssignExam.id,
+      Array.from(effectiveStudentIds),
+      nextCohorts
+    );
+  };
+
+  const handleBulkAssignTickedToGroup = () => {
+    if (selectedStudentIdsForBulk.length === 0) return;
+    for (const sid of selectedStudentIdsForBulk) {
+      examStore.updateStudent(sid, { section: bulkTargetGroup });
+    }
+    showBannerMessage(
+      `Assigned ${selectedStudentIdsForBulk.length} ticked student(s) to Group / Section ${bulkTargetGroup}.`
+    );
   };
 
   return (
@@ -303,7 +500,7 @@ export const ExamManagement: React.FC<ExamManagementProps> = ({
           </div>
           <p className="text-xs sm:text-sm text-slate-500 mt-1">
             {activeMode === 'assignments'
-              ? 'Assign specific student sections (A–L) or individual candidates to scheduled examinations.'
+              ? 'Tick expected students or sections (A–L) to assign them to a particular examination or group.'
               : 'Configure independent examination durations, passing criteria, proctoring locks, and question banks.'}
           </p>
         </div>
@@ -373,146 +570,444 @@ export const ExamManagement: React.FC<ExamManagementProps> = ({
         </div>
       )}
 
-      {activeMode === 'assignments' && activeAssignExam ? (
-        /* STUDENT & COHORT ASSIGNMENT MATRIX */
-        <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-xs space-y-6">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-100">
-            <div>
-              <label
-                htmlFor="assign-exam-select"
-                className="block text-xs font-bold text-slate-500 uppercase mb-1"
-              >
-                Select Target Examination
-              </label>
-              <select
-                id="assign-exam-select"
-                value={activeAssignExam.id}
-                onChange={(e) => setSelectedExamForAssign(e.target.value)}
-                className="px-4 py-2.5 rounded-xl border border-slate-200 bg-slate-50 text-sm font-bold text-slate-900 focus:outline-none focus:border-blue-600"
-              >
-                {state.exams.map((ex) => (
-                  <option key={ex.id} value={ex.id}>
-                    {ex.title} ({ex.subjectName} · {ex.durationMinutes} mins)
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="flex flex-wrap items-center gap-3 text-xs">
-              <div className="px-4 py-2.5 rounded-xl bg-blue-50 text-blue-800 font-semibold">
-                Assigned Students:{' '}
-                <span className="font-mono font-bold">
-                  {activeAssignExam.assignedStudentIds.length}
-                </span>{' '}
-                / {state.students.length}
+      {activeMode === 'assignments' ? (
+        activeAssignExam ? (
+          /* STUDENT & COHORT ASSIGNMENT MATRIX */
+          <div className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-xs space-y-6">
+            {/* Row 1: Target Exam Selector & Global Assign/Clear Controls */}
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-slate-100">
+              <div className="min-w-0 flex-1">
+                <label
+                  htmlFor="assign-exam-select"
+                  className="block text-xs font-bold text-slate-500 uppercase mb-1.5"
+                >
+                  Select Particular Examination to Assign Students / Groups
+                </label>
+                <select
+                  id="assign-exam-select"
+                  value={activeAssignExam.id}
+                  onChange={(e) => setSelectedExamForAssign(e.target.value)}
+                  className="w-full sm:max-w-xl px-4 py-2.5 rounded-xl border border-slate-200 bg-slate-50 text-sm font-bold text-slate-900 focus:outline-none focus:border-blue-600 cursor-pointer"
+                >
+                  {state.exams.map((ex) => (
+                    <option key={ex.id} value={ex.id}>
+                      {ex.title} ({ex.subjectName} · {ex.durationMinutes} mins · {ex.status})
+                    </option>
+                  ))}
+                </select>
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  examStore.assignStudentsToExam(
-                    activeAssignExam.id,
-                    state.students.map((s) => s.id),
-                    [...COHORT_SECTIONS]
-                  );
-                  showBannerMessage(
-                    `Assigned all Sections (A–L) and ${state.students.length} students to "${activeAssignExam.title}".`
-                  );
-                }}
-                className="px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold cursor-pointer transition-colors"
-              >
-                Assign All Sections & Students
-              </button>
-            </div>
-          </div>
 
-          <div>
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-xs font-bold text-slate-700 uppercase">
-                Assigned Student Sections (A – L)
-              </h2>
-              <span className="text-xs text-slate-500">
-                Click a section badge to toggle eligibility for all students in that section
-              </span>
-            </div>
-            <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-12 gap-2">
-              {COHORT_SECTIONS.map((cohort) => {
-                const cleanCohorts = normalizeAndDedupeSections(
-                  activeAssignExam.assignedCohorts
-                );
-                const active = cleanCohorts.includes(cohort);
-                return (
-                  <button
-                    key={cohort}
-                    type="button"
-                    onClick={() => handleToggleCohortAssignment(cohort)}
-                    className={`py-2.5 px-3 rounded-xl text-xs font-extrabold border transition-all cursor-pointer ${
-                      active
-                        ? 'bg-blue-600 border-blue-600 text-white shadow-xs'
-                        : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
-                    }`}
-                  >
-                    Sec {cohort}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          <div>
-            <h2 className="text-xs font-bold text-slate-700 uppercase mb-3">
-              Individual Candidate Roster Eligibility
-            </h2>
-            <div className="overflow-x-auto border border-slate-200/80 rounded-2xl">
-              <table className="w-full text-left border-collapse text-xs">
-                <thead>
-                  <tr className="bg-slate-50 border-b border-slate-200/80 text-[11px] font-bold text-slate-500 uppercase">
-                    <th className="py-3 px-4">Assigned</th>
-                    <th className="py-3 px-4">Student ID</th>
-                    <th className="py-3 px-4">Full Name</th>
-                    <th className="py-3 px-4">Section</th>
-                    <th className="py-3 px-4">Department</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {state.students.map((stu) => {
-                    const checked =
-                      activeAssignExam.assignedStudentIds.includes(stu.id) ||
-                      normalizeAndDedupeSections(
-                        activeAssignExam.assignedCohorts
-                      ).includes(stu.section);
-                    return (
-                      <tr
-                        key={stu.id}
-                        onClick={() => handleToggleStudentAssignment(stu.id)}
-                        className="hover:bg-slate-50 cursor-pointer"
-                      >
-                        <td className="py-3 px-4">
-                          <input
-                            type="checkbox"
-                            aria-label={`Assign ${stu.name}`}
-                            checked={checked}
-                            onChange={() => {}}
-                            className="rounded border-slate-300 text-blue-600"
-                          />
-                        </td>
-                        <td className="py-3 px-4 font-mono font-bold text-blue-600">
-                          {stu.studentId}
-                        </td>
-                        <td className="py-3 px-4 font-bold text-slate-900">
-                          {stu.name}
-                        </td>
-                        <td className="py-3 px-4 font-bold text-slate-700">
-                          Section {stu.section}
-                        </td>
-                        <td className="py-3 px-4 text-slate-500">{stu.department}</td>
-                      </tr>
+              <div className="flex flex-wrap items-center gap-2.5 text-xs shrink-0">
+                <div className="px-4 py-2.5 rounded-xl bg-blue-50 text-blue-800 font-semibold">
+                  Assigned to &ldquo;{activeAssignExam.title}&rdquo;:{' '}
+                  <span className="font-mono font-bold">
+                    {assignedStudentsCount}
+                  </span>{' '}
+                  / {state.students.length} Students
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    examStore.assignStudentsToExam(
+                      activeAssignExam.id,
+                      state.students.map((s) => s.id),
+                      [...COHORT_SECTIONS]
                     );
-                  })}
-                </tbody>
-              </table>
+                    showBannerMessage(
+                      `Ticked & assigned all Groups (A–L) and ${state.students.length} students to "${activeAssignExam.title}".`
+                    );
+                  }}
+                  className="px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold cursor-pointer transition-colors"
+                >
+                  Tick All Groups & Students
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    examStore.assignStudentsToExam(activeAssignExam.id, [], []);
+                    showBannerMessage(
+                      `Unticked all groups and students for "${activeAssignExam.title}". Now tick only the expected students or groups below.`
+                    );
+                  }}
+                  className="px-3.5 py-2.5 rounded-xl bg-slate-100 hover:bg-slate-200 border border-slate-200 text-slate-700 font-bold cursor-pointer transition-colors"
+                >
+                  Untick All (Clear Exam)
+                </button>
+              </div>
+            </div>
+
+            {/* Row 2: Group / Section Tickboxes (A – L) */}
+            <div>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
+                <h2 className="text-xs font-bold text-slate-700 uppercase">
+                  Assign by Group / Section Tickboxes (Sections A – L)
+                </h2>
+                <span className="text-xs text-slate-500">
+                  Tick a group box to assign or unassign that entire section for &ldquo;{activeAssignExam.title}&rdquo;
+                </span>
+              </div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-12 gap-2">
+                {COHORT_SECTIONS.map((cohort) => {
+                  const sectionStudents = state.students.filter(
+                    (s) => s.section === cohort
+                  );
+                  const assignedInSec = sectionStudents.filter((s) =>
+                    isStudentAssignedToActiveExam(s)
+                  ).length;
+                  const active = cleanAssignCohorts.includes(cohort);
+                  const isPartial =
+                    !active && assignedInSec > 0 && assignedInSec < sectionStudents.length;
+
+                  return (
+                    <label
+                      key={cohort}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        handleToggleCohortAssignment(cohort);
+                      }}
+                      className={`py-2.5 px-2.5 rounded-xl text-xs font-extrabold border transition-all cursor-pointer flex flex-col items-center justify-center gap-1 select-none ${
+                        active
+                          ? 'bg-blue-600 border-blue-500 text-white shadow-xs'
+                          : isPartial
+                            ? 'bg-indigo-50 border-indigo-400 text-indigo-800'
+                            : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
+                      }`}
+                      title={`Group / Section ${cohort}: ${assignedInSec} of ${sectionStudents.length} students assigned`}
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <span
+                          className={`w-4 h-4 rounded flex items-center justify-center border text-[10px] font-black transition-colors ${
+                            active
+                              ? 'bg-white border-white text-violet-700'
+                              : isPartial
+                                ? 'bg-violet-500/40 border-violet-300 text-white'
+                                : 'bg-slate-900/60 border-violet-400/70 text-transparent'
+                          }`}
+                        >
+                          {active ? '✓' : isPartial ? '–' : ''}
+                        </span>
+                        <span>Sec {cohort}</span>
+                      </div>
+                      <span className="text-[10px] font-mono opacity-85">
+                        {assignedInSec}/{sectionStudents.length} stu
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Row 3: Individual Candidate Roster Eligibility & Tickbox Assignment */}
+            <div className="space-y-4">
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-xs font-bold text-slate-700 uppercase">
+                    Individual Candidate Roster & Exam / Group Tickboxes ({filteredMatrixStudents.length} Students)
+                  </h2>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Tick the checkbox next to any student to assign them to <strong>{activeAssignExam.title}</strong>, or tick any specific exam badge in their row.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <select
+                    aria-label="Filter roster by section"
+                    value={matrixSectionFilter}
+                    onChange={(e) => setMatrixSectionFilter(e.target.value)}
+                    className="px-3 py-1.5 rounded-xl border border-slate-200 bg-slate-50 text-xs font-bold text-slate-800 focus:outline-none cursor-pointer"
+                  >
+                    <option value="ALL">Filter: All Groups (A–L)</option>
+                    {COHORT_SECTIONS.map((sec) => (
+                      <option key={sec} value={sec}>
+                        Group / Section {sec}
+                      </option>
+                    ))}
+                  </select>
+
+                  <div className="relative w-full sm:w-64">
+                    <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                    <input
+                      type="text"
+                      value={matrixStudentSearch}
+                      onChange={(e) => setMatrixStudentSearch(e.target.value)}
+                      placeholder="Search student ID or name..."
+                      className="w-full pl-8 pr-3 py-1.5 rounded-xl border border-slate-200 text-xs text-slate-900 focus:outline-none focus:border-blue-600"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Bulk Action Bar for Ticked Students */}
+              <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200/80 flex flex-col xl:flex-row xl:items-center justify-between gap-3 text-xs">
+                <div className="flex flex-wrap items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={toggleSelectAllFilteredForBulk}
+                    className="inline-flex items-center gap-2 px-3 py-1.5 rounded-xl bg-white border border-slate-200 font-bold text-slate-800 hover:bg-slate-100 cursor-pointer"
+                  >
+                    <span
+                      className={`w-4 h-4 rounded flex items-center justify-center border text-[11px] font-black ${
+                        allFilteredSelectedForBulk
+                          ? 'bg-violet-600 border-violet-400 text-white'
+                          : 'bg-slate-900/60 border-violet-400/70 text-transparent'
+                      }`}
+                    >
+                      ✓
+                    </span>
+                    <span>
+                      {allFilteredSelectedForBulk
+                        ? 'Untick All Shown Students'
+                        : 'Select All Shown Students'}
+                    </span>
+                  </button>
+                  <span className="font-semibold text-slate-600">
+                    Selected for Bulk Action:{' '}
+                    <strong className="text-white font-mono">
+                      {selectedStudentIdsForBulk.length}
+                    </strong>{' '}
+                    student(s)
+                  </span>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={selectedStudentIdsForBulk.length === 0}
+                    onClick={() => handleBulkAssignTickedToExam(true)}
+                    className="px-3.5 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white font-bold cursor-pointer transition-colors"
+                  >
+                    Assign Selected to &ldquo;{activeAssignExam.title}&rdquo;
+                  </button>
+                  <button
+                    type="button"
+                    disabled={selectedStudentIdsForBulk.length === 0}
+                    onClick={() => handleBulkAssignTickedToExam(false)}
+                    className="px-3.5 py-1.5 rounded-xl bg-red-50 hover:bg-red-100 disabled:opacity-40 border border-red-200 text-red-700 font-bold cursor-pointer transition-colors"
+                  >
+                    Unassign Selected from Exam
+                  </button>
+
+                  <div className="flex items-center gap-1.5 pl-2 border-l border-slate-200">
+                    <select
+                      aria-label="Target group for selected students"
+                      value={bulkTargetGroup}
+                      onChange={(e) => setBulkTargetGroup(e.target.value)}
+                      className="px-2.5 py-1.5 rounded-xl border border-slate-200 bg-white text-xs font-bold text-slate-800 cursor-pointer"
+                    >
+                      {COHORT_SECTIONS.map((sec) => (
+                        <option key={sec} value={sec}>
+                          Group Sec {sec}
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      disabled={selectedStudentIdsForBulk.length === 0}
+                      onClick={handleBulkAssignTickedToGroup}
+                      className="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white font-bold cursor-pointer transition-colors"
+                    >
+                      Move to Group
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="overflow-x-auto border border-slate-200/80 rounded-2xl">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="bg-slate-50 border-b border-slate-200/80 text-[11px] font-bold text-slate-500 uppercase">
+                      <th className="py-3.5 px-4 w-12">
+                        <button
+                          type="button"
+                          onClick={toggleSelectAllFilteredForBulk}
+                          aria-label="Select all students for bulk assignment"
+                          className={`w-5 h-5 rounded-md flex items-center justify-center border-2 text-xs font-black cursor-pointer transition-colors ${
+                            allFilteredSelectedForBulk
+                              ? 'bg-violet-600 border-violet-400 text-white'
+                              : 'bg-slate-900/70 border-violet-400/80 text-transparent hover:border-violet-300'
+                          }`}
+                        >
+                          ✓
+                        </button>
+                      </th>
+                      <th className="py-3.5 px-4">
+                        Tick to Assign (&ldquo;{activeAssignExam.title}&rdquo;)
+                      </th>
+                      <th className="py-3.5 px-4">Student ID &amp; Name</th>
+                      <th className="py-3.5 px-4">Assign Group (Sec A–L)</th>
+                      <th className="py-3.5 px-4">
+                        Assign to Particular Exam(s) (Tickboxes)
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {filteredMatrixStudents.map((stu) => {
+                      const assignedToTarget = isStudentAssignedToActiveExam(stu);
+                      const isBulkTicked = selectedStudentIdsForBulk.includes(
+                        stu.id
+                      );
+                      return (
+                        <tr
+                          key={stu.id}
+                          className="hover:bg-slate-50/70 transition-colors"
+                        >
+                          {/* Bulk selection tickbox */}
+                          <td className="py-3.5 px-4">
+                            <button
+                              type="button"
+                              onClick={() => toggleBulkSelectStudent(stu.id)}
+                              aria-label={`Select ${stu.name} for bulk action`}
+                              className={`w-5 h-5 rounded-md flex items-center justify-center border-2 text-xs font-black cursor-pointer transition-colors ${
+                                isBulkTicked
+                                  ? 'bg-violet-600 border-violet-400 text-white'
+                                  : 'bg-slate-900/70 border-violet-400/80 text-transparent hover:border-violet-300'
+                              }`}
+                            >
+                              ✓
+                            </button>
+                          </td>
+
+                          {/* Primary Target Exam Assignment Tickbox */}
+                          <td className="py-3.5 px-4">
+                            <button
+                              type="button"
+                              onClick={() => handleToggleStudentAssignment(stu.id)}
+                              className={`inline-flex items-center gap-2.5 px-3 py-1.5 rounded-xl border text-xs font-extrabold cursor-pointer transition-all ${
+                                assignedToTarget
+                                  ? 'bg-emerald-50 border-emerald-400 text-emerald-800 shadow-xs'
+                                  : 'bg-slate-100 border-slate-300 text-slate-600 hover:border-violet-400'
+                              }`}
+                            >
+                              <span
+                                className={`w-4 h-4 rounded flex items-center justify-center border text-[11px] font-black ${
+                                  assignedToTarget
+                                    ? 'bg-emerald-500 border-emerald-300 text-slate-950'
+                                    : 'bg-slate-900/80 border-violet-400/80 text-transparent'
+                                }`}
+                              >
+                                ✓
+                              </span>
+                              <span>
+                                {assignedToTarget
+                                  ? 'Assigned (Ticked)'
+                                  : 'Tick to Assign'}
+                              </span>
+                            </button>
+                          </td>
+
+                          {/* Student ID & Full Name */}
+                          <td className="py-3.5 px-4">
+                            <div className="font-mono font-extrabold text-blue-600">
+                              {stu.studentId}
+                            </div>
+                            <div className="font-bold text-slate-900 mt-0.5">
+                              {stu.name}
+                            </div>
+                            <div className="text-[11px] text-slate-500">
+                              {stu.department}
+                            </div>
+                          </td>
+
+                          {/* Direct Group / Section Selector */}
+                          <td className="py-3.5 px-4">
+                            <select
+                              aria-label={`Change group section for ${stu.name}`}
+                              value={stu.section}
+                              onChange={(e) => {
+                                const nextSec = e.target.value;
+                                examStore.updateStudent(stu.id, {
+                                  section: nextSec,
+                                });
+                                showBannerMessage(
+                                  `Assigned ${stu.name} (${stu.studentId}) to Group / Section ${nextSec}.`
+                                );
+                              }}
+                              className="px-3 py-1.5 rounded-xl border border-slate-200 bg-slate-50 text-xs font-bold text-slate-900 focus:outline-none cursor-pointer"
+                            >
+                              {COHORT_SECTIONS.map((sec) => (
+                                <option key={sec} value={sec}>
+                                  Section {sec}
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+
+                          {/* All Particular Exams Tickboxes for this student */}
+                          <td className="py-3.5 px-4">
+                            <div className="flex flex-wrap items-center gap-2">
+                              {state.exams.map((ex) => {
+                                const isAssignedThisExam =
+                                  isStudentAssignedToExam(ex, stu);
+                                return (
+                                  <button
+                                    key={ex.id}
+                                    type="button"
+                                    onClick={() =>
+                                      handleToggleStudentForSpecificExam(
+                                        ex.id,
+                                        stu.id
+                                      )
+                                    }
+                                    className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border text-[11px] font-bold cursor-pointer transition-all ${
+                                      isAssignedThisExam
+                                        ? 'bg-blue-600 border-blue-500 text-white shadow-xs'
+                                        : 'bg-slate-100 border-slate-200 text-slate-500 hover:border-violet-400'
+                                    }`}
+                                    title={`Click to ${
+                                      isAssignedThisExam ? 'unassign' : 'assign'
+                                    } ${stu.name} for "${ex.title}"`}
+                                  >
+                                    <span
+                                      className={`w-3.5 h-3.5 rounded flex items-center justify-center border text-[10px] font-black ${
+                                        isAssignedThisExam
+                                          ? 'bg-white border-white text-violet-700'
+                                          : 'bg-slate-900/70 border-violet-400/70 text-transparent'
+                                      }`}
+                                    >
+                                      ✓
+                                    </span>
+                                    <span>{ex.title}</span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {filteredMatrixStudents.length === 0 && (
+                      <tr>
+                        <td
+                          colSpan={5}
+                          className="py-8 text-center text-xs text-slate-500"
+                        >
+                          No candidates match your current group or search filter.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
-        </div>
+        ) : (
+          <div className="bg-white rounded-2xl border border-slate-200/80 p-10 text-center space-y-3">
+            <div className="text-sm font-extrabold text-slate-900">
+              No Examinations Available to Assign
+            </div>
+            <p className="text-xs text-slate-500 max-w-md mx-auto">
+              Create an examination first to configure Section (A–L) and individual student eligibility in the matrix.
+            </p>
+            <button
+              type="button"
+              onClick={openNewExamModal}
+              className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-md shadow-blue-600/20 transition-colors cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              Create Examination
+            </button>
+          </div>
+        )
       ) : (
         /* EXAMINATIONS LIST & LIFECYCLE CONTROLS */
         <>
@@ -588,32 +1083,36 @@ export const ExamManagement: React.FC<ExamManagementProps> = ({
                   className="bg-white rounded-2xl border border-slate-200/80 p-6 shadow-xs flex flex-col justify-between gap-5"
                 >
                   <div>
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="text-xs font-semibold text-blue-600 truncate">
-                          {exam.subjectName} · Sections:{' '}
-                          {cleanCohorts.length === 12
-                            ? 'All (A–L)'
-                            : cleanCohorts.join(', ')}
+                    <div className="flex flex-col gap-3">
+                      <div className="w-full">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="text-xs font-bold text-blue-600 tracking-wide">
+                            {exam.subjectName || 'General Subject'} · Sections:{' '}
+                            {cleanCohorts.length === 12
+                              ? 'All (A–L)'
+                              : cleanCohorts.length > 0
+                                ? cleanCohorts.join(', ')
+                                : 'None'}
+                          </span>
+                          <span
+                            className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border shrink-0 ${
+                              exam.status === 'Draft'
+                                ? 'bg-amber-50 border-amber-300 text-amber-800'
+                                : 'bg-emerald-50 border-emerald-300 text-emerald-800'
+                            }`}
+                          >
+                            {exam.status === 'Draft'
+                              ? 'Draft · Hidden from Students'
+                              : `${exam.status} · Visible to Students`}
+                          </span>
                         </div>
-                        <h2 className="text-lg font-extrabold text-slate-900 mt-0.5 truncate">
-                          {exam.title}
+
+                        <h2 className="text-xl font-extrabold text-white mt-1.5 leading-snug break-words">
+                          {exam.title || 'Untitled Examination'}
                         </h2>
                       </div>
 
-                      <div className="flex flex-wrap items-center gap-2 shrink-0">
-                        <span
-                          className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border ${
-                            exam.status === 'Draft'
-                              ? 'bg-amber-50 border-amber-300 text-amber-800'
-                              : 'bg-emerald-50 border-emerald-300 text-emerald-800'
-                          }`}
-                        >
-                          {exam.status === 'Draft'
-                            ? 'Draft · Hidden from Students'
-                            : 'Live · Visible to Students'}
-                        </span>
-
+                      <div className="flex flex-wrap items-center justify-between gap-2 pt-2.5 border-t border-slate-100">
                         {exam.status === 'Draft' ? (
                           <button
                             type="button"
@@ -625,7 +1124,7 @@ export const ExamManagement: React.FC<ExamManagementProps> = ({
                                 `Published "${exam.title}" — now visible in Student Login.`
                               );
                             }}
-                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-colors cursor-pointer"
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition-colors cursor-pointer"
                             title="Publish immediately so students can view and take this examination"
                           >
                             <Sparkles className="w-3.5 h-3.5" />
@@ -642,7 +1141,7 @@ export const ExamManagement: React.FC<ExamManagementProps> = ({
                                 `Moved "${exam.title}" to Draft — now hidden from Student Login.`
                               );
                             }}
-                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 border border-slate-200 text-slate-700 text-xs font-bold transition-colors cursor-pointer"
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 border border-slate-200 text-slate-700 text-xs font-bold transition-colors cursor-pointer"
                             title="Move to Draft mode to hide this examination from Student Login"
                           >
                             Set as Draft (Hide)
@@ -677,7 +1176,7 @@ export const ExamManagement: React.FC<ExamManagementProps> = ({
                       </div>
                     </div>
 
-                    <p className="text-xs text-slate-600 mt-2 leading-relaxed line-clamp-2">
+                    <p className="text-xs text-slate-600 mt-3 leading-relaxed line-clamp-2">
                       {exam.description}
                     </p>
 

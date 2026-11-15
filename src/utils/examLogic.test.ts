@@ -707,3 +707,69 @@ test('mergeSharedPlatformState preserves Draft status on exams with questions an
   assert.equal(merged.questions.some((q) => q.id === 'q-valid-1'), true);
 });
 
+test('normalizeAndDedupeSections and mergeSharedPlatformState preserve cleared or individual student assignments without forcing Section A', async () => {
+  const { normalizeAndDedupeSections, mergeSharedPlatformState } = await import(
+    '../services/examStore.ts'
+  );
+  assert.deepEqual(normalizeAndDedupeSections([]), []);
+  assert.deepEqual(normalizeAndDedupeSections(undefined), ['A']);
+
+  const merged = mergeSharedPlatformState(
+    {
+      students: [
+        {
+          id: 'stu-a1',
+          studentId: '2025PECA1',
+          name: 'Student A1',
+          email: 'a1@student.edu',
+          department: 'AI & DS',
+          year: 'Year 1',
+          section: 'A',
+          status: 'Active',
+          createdAt: '2026-11-10',
+          updatedAtMs: 1000,
+        },
+        {
+          id: 'stu-a2',
+          studentId: '2025PECA2',
+          name: 'Student A2',
+          email: 'a2@student.edu',
+          department: 'AI & DS',
+          year: 'Year 1',
+          section: 'A',
+          status: 'Active',
+          createdAt: '2026-11-10',
+          updatedAtMs: 1000,
+        },
+      ],
+      exams: [
+        {
+          id: 'exam-custom-assign',
+          title: 'Custom Matrix Exam',
+          subjectId: 'sub-1',
+          subjectName: 'C Programming',
+          description: 'Only stu-a1 is assigned',
+          scheduledDate: '2026-11-10',
+          startTime: '10:00',
+          durationMinutes: 60,
+          totalMarks: 50,
+          passingMarks: 25,
+          instructions: 'Instructions',
+          status: 'Published',
+          assignedStudentIds: ['stu-a1'],
+          assignedCohorts: [],
+          webcamProctoring: true,
+          updatedAtMs: 2000,
+        },
+      ],
+    },
+    {}
+  );
+
+  const customExam = merged.exams.find((e) => e.id === 'exam-custom-assign');
+  assert.ok(customExam);
+  assert.deepEqual(customExam.assignedCohorts, []);
+  assert.deepEqual(customExam.assignedStudentIds, ['stu-a1']);
+});
+
+

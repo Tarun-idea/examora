@@ -320,12 +320,14 @@ export function makeDeterministicStudentDocId(studentId: string): string {
 }
 
 export function normalizeAndDedupeSections(cohorts?: string[]): string[] {
-  if (!Array.isArray(cohorts) || cohorts.length === 0) {
+  if (!Array.isArray(cohorts)) {
     return ['A'];
   }
+  if (cohorts.length === 0) {
+    return [];
+  }
   const normalizedSet = new Set(cohorts.map((c) => normalizeSection(c)));
-  const ordered = ALL_SECTIONS.filter((sec) => normalizedSet.has(sec));
-  return ordered.length > 0 ? ordered : ['A'];
+  return ALL_SECTIONS.filter((sec) => normalizedSet.has(sec));
 }
 
 const LEGACY_PURGED_QUESTION_IDS = new Set([
@@ -543,10 +545,13 @@ export function mergeSharedPlatformState(
     current.subjects || [],
     incoming.subjects || [],
     deletedSet
-  ).map((sub) => ({
-    ...sub,
-    cohorts: normalizeAndDedupeSections(sub.cohorts),
-  }));
+  ).map((sub) => {
+    const clean = normalizeAndDedupeSections(sub.cohorts);
+    return {
+      ...sub,
+      cohorts: clean.length > 0 ? clean : ['A'],
+    };
+  });
 
   let exams = mergeArrayById<Exam>(
     current.exams || [],
@@ -554,7 +559,9 @@ export function mergeSharedPlatformState(
     deletedSet
   ).map((ex) => ({
     ...ex,
-    assignedCohorts: normalizeAndDedupeSections(ex.assignedCohorts),
+    assignedCohorts: Array.isArray(ex.assignedCohorts)
+      ? normalizeAndDedupeSections(ex.assignedCohorts)
+      : [...ALL_SECTIONS],
     assignedStudentIds: Array.isArray(ex.assignedStudentIds)
       ? Array.from(new Set(ex.assignedStudentIds))
       : [],
@@ -619,11 +626,10 @@ export function mergeSharedPlatformState(
   exams = exams.map((ex) => {
     const examQuestions = questions.filter((q) => q.examId === ex.id);
     const qSum = examQuestions.reduce((acc, q) => acc + (Number(q.marks) || 0), 0);
-    const nextCohorts =
-      ex.assignedCohorts && ex.assignedCohorts.length > 0
-        ? normalizeAndDedupeSections(ex.assignedCohorts)
-        : [...ALL_SECTIONS];
-    const nextAssigned = new Set(ex.assignedStudentIds);
+    const nextCohorts = Array.isArray(ex.assignedCohorts)
+      ? normalizeAndDedupeSections(ex.assignedCohorts)
+      : [...ALL_SECTIONS];
+    const nextAssigned = new Set(ex.assignedStudentIds || []);
     for (const stu of students) {
       if (nextCohorts.includes(stu.section)) {
         nextAssigned.add(stu.id);
@@ -1628,9 +1634,12 @@ class ExamStore {
             ...updates,
             code: updates.code ? updates.code.trim().toUpperCase() : s.code,
             name: updates.name ? updates.name.trim() : s.name,
-            cohorts: updates.cohorts
-              ? normalizeAndDedupeSections(updates.cohorts)
-              : normalizeAndDedupeSections(s.cohorts),
+            cohorts: (() => {
+              const clean = updates.cohorts
+                ? normalizeAndDedupeSections(updates.cohorts)
+                : normalizeAndDedupeSections(s.cohorts);
+              return clean.length > 0 ? clean : ['A'];
+            })(),
             updatedAtMs: now,
           }
         : s
@@ -1944,16 +1953,29 @@ class ExamStore {
 
     this.state.exams = this.state.exams.map((e) => {
       if (e.id !== id) return e;
-      const nextCohorts = updates.assignedCohorts
-        ? normalizeAndDedupeSections(updates.assignedCohorts)
-        : normalizeAndDedupeSections(e.assignedCohorts);
+      const prevCohorts = normalizeAndDedupeSections(e.assignedCohorts);
+      const nextCohorts =
+        updates.assignedCohorts !== undefined
+          ? normalizeAndDedupeSections(updates.assignedCohorts)
+          : prevCohorts;
 
       let nextStudentIds = updates.assignedStudentIds ?? e.assignedStudentIds;
-      if (updates.assignedCohorts && !updates.assignedStudentIds) {
+      if (updates.assignedCohorts !== undefined && !updates.assignedStudentIds) {
+        const removedSections = new Set(
+          prevCohorts.filter((c) => !nextCohorts.includes(c))
+        );
+        const removedSectionStudentIds = new Set(
+          this.state.students
+            .filter((s) => removedSections.has(s.section))
+            .map((s) => s.id)
+        );
+        const retainedIds = (e.assignedStudentIds || []).filter(
+          (sid) => !removedSectionStudentIds.has(sid)
+        );
         const cohortStudents = this.state.students
           .filter((s) => nextCohorts.includes(s.section))
           .map((s) => s.id);
-        nextStudentIds = Array.from(new Set([...e.assignedStudentIds, ...cohortStudents]));
+        nextStudentIds = Array.from(new Set([...retainedIds, ...cohortStudents]));
       }
 
       if (updates.title && updates.title !== e.title) {
@@ -2152,20 +2174,16 @@ class ExamStore {
     if (examQuestions.length > 0) {
       const now = this.nextTimestamp();
       const sum = examQuestions.reduce((acc, q) => acc + q.marks, 0);
-      const allStuIds = this.state.students.map((s) => s.id);
       this.state.exams = this.state.exams.map((e) =>
         e.id === examId
           ? {
               ...e,
               totalMarks: sum,
               passingMarks: Math.min(e.passingMarks, sum) || Math.ceil(sum * 0.5),
-              assignedCohorts:
-                e.assignedCohorts && e.assignedCohorts.length > 0
-                  ? normalizeAndDedupeSections(e.assignedCohorts)
-                  : [...ALL_SECTIONS],
-              assignedStudentIds: Array.from(
-                new Set([...(e.assignedStudentIds || []), ...allStuIds])
-              ),
+              assignedCohorts: Array.isArray(e.assignedCohorts)
+                ? normalizeAndDedupeSections(e.assignedCohorts)
+                : [...ALL_SECTIONS],
+              assignedStudentIds: Array.from(new Set(e.assignedStudentIds || [])),
               updatedAtMs: now,
             }
           : e

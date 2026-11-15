@@ -40,7 +40,8 @@ function normalizeServerSection(sec?: string): string {
 }
 
 function normalizeAndDedupeServerSections(arr?: any[]): string[] {
-  if (!Array.isArray(arr) || arr.length === 0) return ['A'];
+  if (!Array.isArray(arr)) return ['A'];
+  if (arr.length === 0) return [];
   const unique = Array.from(new Set(arr.map((c) => normalizeServerSection(String(c)))));
   return unique.sort((a, b) => VALID_SECTIONS.indexOf(a) - VALID_SECTIONS.indexOf(b));
 }
@@ -98,10 +99,13 @@ function sanitizeServerStateCollections(stateObj: Record<string, any>): Record<s
     }));
   }
   if (Array.isArray(stateObj.subjects)) {
-    stateObj.subjects = stateObj.subjects.map((sub: any) => ({
-      ...sub,
-      cohorts: normalizeAndDedupeServerSections(sub.cohorts),
-    }));
+    stateObj.subjects = stateObj.subjects.map((sub: any) => {
+      const clean = normalizeAndDedupeServerSections(sub.cohorts);
+      return {
+        ...sub,
+        cohorts: clean.length > 0 ? clean : ['A'],
+      };
+    });
   }
   if (Array.isArray(stateObj.questions)) {
     stateObj.questions = stateObj.questions
@@ -151,24 +155,27 @@ function sanitizeServerStateCollections(stateObj: Record<string, any>): Record<s
         }
       }
     }
-    const allStudentIds = Array.isArray(stateObj.students)
-      ? stateObj.students.map((s: any) => s.id).filter(Boolean)
-      : [];
-
     stateObj.exams = stateObj.exams.map((ex: any) => {
       const qMarks = qByExam.get(ex.id) || 0;
-      const cohorts = normalizeAndDedupeServerSections(ex.assignedCohorts);
+      const cohorts = Array.isArray(ex.assignedCohorts)
+        ? normalizeAndDedupeServerSections(ex.assignedCohorts)
+        : [...VALID_SECTIONS];
+      const studentSet = new Set<string>(
+        Array.isArray(ex.assignedStudentIds) ? ex.assignedStudentIds : []
+      );
+      if (Array.isArray(stateObj.students)) {
+        for (const s of stateObj.students) {
+          if (s?.id && cohorts.includes(normalizeServerSection(s.section))) {
+            studentSet.add(s.id);
+          }
+        }
+      }
       return {
         ...ex,
         status: ex.status || 'Published',
         totalMarks: qMarks > 0 ? qMarks : ex.totalMarks,
         assignedCohorts: cohorts,
-        assignedStudentIds: Array.from(
-          new Set([
-            ...(Array.isArray(ex.assignedStudentIds) ? ex.assignedStudentIds : []),
-            ...allStudentIds,
-          ])
-        ),
+        assignedStudentIds: Array.from(studentSet),
       };
     });
   }
