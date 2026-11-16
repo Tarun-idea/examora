@@ -115,10 +115,154 @@ export function sanitizeExtractedText(raw: string): string {
       line
         .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
         .replace(/\uFFFD/g, '')
-        .trim()
+        .replace(/\s+$/, '')
     )
-    .filter((line) => line.length > 0 && isCleanReadableText(line))
+    .filter((line) => line.trim().length > 0 && isCleanReadableText(line))
     .join('\n');
+}
+
+/**
+ * Expands a single-line flattened C/C++/Java code snippet into properly indented multi-line code,
+ * while preserving string literals (including escaped characters like \n) and for(...) headers.
+ */
+function expandFlattenedCodeSegment(codeSegment: string): string {
+  const outLines: string[] = [];
+  let cur = '';
+  let indent = 0;
+  let inString: '"' | "'" | null = null;
+  let parenDepth = 0;
+  const src = codeSegment.trim();
+
+  const pushCurrentLine = (customIndent = indent) => {
+    const trimmed = cur.trim();
+    if (trimmed.length > 0) {
+      outLines.push(`${'    '.repeat(Math.max(0, customIndent))}${trimmed}`);
+    }
+    cur = '';
+  };
+
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+
+    if (inString) {
+      cur += ch;
+      if (ch === '\\' && i + 1 < src.length) {
+        cur += src[i + 1];
+        i++;
+        continue;
+      }
+      if (ch === inString) {
+        inString = null;
+      }
+      continue;
+    }
+
+    if (ch === '"' || ch === "'") {
+      inString = ch;
+      cur += ch;
+      continue;
+    }
+
+    if (ch === '(') {
+      parenDepth++;
+      cur += ch;
+      continue;
+    }
+
+    if (ch === ')') {
+      parenDepth = Math.max(0, parenDepth - 1);
+      cur += ch;
+      continue;
+    }
+
+    // Handle #include <...> on the same line as following code
+    if (
+      ch === '>' &&
+      parenDepth === 0 &&
+      /^#include\s*<[^>]+$/.test(cur.trim())
+    ) {
+      cur += ch;
+      pushCurrentLine(indent);
+      continue;
+    }
+
+    if (ch === '{' && parenDepth === 0) {
+      cur += ch;
+      pushCurrentLine(indent);
+      indent++;
+      continue;
+    }
+
+    if (ch === ';' && parenDepth === 0) {
+      cur += ch;
+      pushCurrentLine(indent);
+      continue;
+    }
+
+    if (ch === '}' && parenDepth === 0) {
+      if (cur.trim().length > 0) {
+        pushCurrentLine(indent);
+      }
+      indent = Math.max(0, indent - 1);
+      cur = '}';
+      // Keep trailing semicolon with closing brace if struct/array init
+      if (src[i + 1] === ';') {
+        cur += ';';
+        i++;
+      }
+      pushCurrentLine(indent);
+      continue;
+    }
+
+    cur += ch;
+  }
+
+  if (cur.trim().length > 0) {
+    pushCurrentLine(indent);
+  }
+
+  return outLines.join('\n');
+}
+
+/**
+ * Formats a question or problem statement so that:
+ * 1. Multi-line text and code typed by the user in the Question Box is displayed as-is with exact line breaks and indentation.
+ * 2. Any flattened single-line C/C++/Java code snippet (e.g. "#include <stdio.h> int main() { int y = 10000; ... }")
+ *    is automatically structured into clean, readable multi-line program code.
+ */
+export function formatQuestionPromptForDisplay(rawText: string): string {
+  if (!rawText || typeof rawText !== 'string') return '';
+  const normalized = rawText.replace(/\r\n/g, '\n');
+  const lines = normalized.split('\n');
+
+  const formattedLines = lines.map((line) => {
+    const trimmed = line.trim();
+    // Check if this single line contains flattened inline C/C++/Java code (has #include or main() AND braces/semicolons on one line)
+    const hasInlineCodeMarkers =
+      (/#include\s*[<"]/.test(trimmed) ||
+        /\b(?:int|void|public\s+static\s+void)\s+main\s*\(/.test(trimmed)) &&
+      trimmed.includes('{') &&
+      trimmed.includes(';') &&
+      trimmed.includes('}');
+
+    if (!hasInlineCodeMarkers) {
+      return line;
+    }
+
+    // Separate leading prose prompt (e.g. "What will be the output of the following C code?") from the code start
+    const codeStartMatch = trimmed.match(
+      /(#include\s*[<"]|\b(?:int|void|public\s+static\s+void)\s+main\s*\()/
+    );
+    if (codeStartMatch && codeStartMatch.index !== undefined && codeStartMatch.index > 0) {
+      const prosePrefix = trimmed.slice(0, codeStartMatch.index).trim();
+      const codePart = trimmed.slice(codeStartMatch.index).trim();
+      return `${prosePrefix}\n\n${expandFlattenedCodeSegment(codePart)}`;
+    }
+
+    return expandFlattenedCodeSegment(trimmed);
+  });
+
+  return formattedLines.join('\n');
 }
 
 /**
@@ -1689,7 +1833,9 @@ export function parseQuestionsFromJson(
     return {
       tempId: `imp-${Date.now()}-${idx}`,
       type,
-      text: progSpec ? progSpec.cleanPrompt : rawQuestionText,
+      text: progSpec
+        ? progSpec.cleanPrompt
+        : formatQuestionPromptForDisplay(rawQuestionText),
       marks: Math.max(
         1,
         Number(item.marks) || (type === 'programming' ? 20 : 10)
@@ -1741,68 +1887,140 @@ export function parseQuestionsFromJson(
   });
 }
 
-function splitCsvRow(line: string): string[] {
-  const cols: string[] = [];
-  let cur = '';
+/**
+ * State-machine CSV parser that properly preserves newlines and indentation inside quoted cells.
+ */
+function parseCsvRows(csvText: string): string[][] {
+  const rows: string[][] = [];
+  let currentRow: string[] = [];
+  let curCell = '';
   let inQuotes = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
+  const normalized = csvText.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+  for (let i = 0; i < normalized.length; i++) {
+    const ch = normalized[i];
     if (ch === '"') {
-      if (inQuotes && line[i + 1] === '"') {
-        cur += '"';
+      if (inQuotes && normalized[i + 1] === '"') {
+        curCell += '"';
         i++;
       } else {
         inQuotes = !inQuotes;
       }
     } else if (ch === ',' && !inQuotes) {
-      cols.push(cur.trim());
-      cur = '';
+      currentRow.push(curCell.trim());
+      curCell = '';
+    } else if (ch === '\n' && !inQuotes) {
+      currentRow.push(curCell.trim());
+      if (currentRow.some((cell) => cell.length > 0)) {
+        rows.push(currentRow);
+      }
+      currentRow = [];
+      curCell = '';
     } else {
-      cur += ch;
+      curCell += ch;
     }
   }
-  cols.push(cur.trim());
-  return cols;
+
+  currentRow.push(curCell.trim());
+  if (currentRow.some((cell) => cell.length > 0)) {
+    rows.push(currentRow);
+  }
+
+  return rows;
 }
 
 export function parseQuestionsFromCsv(csvText: string): ParsedQuestionDraft[] {
-  const lines = csvText
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean);
-  if (lines.length <= 1) return [];
+  const rows = parseCsvRows(csvText);
+  if (rows.length === 0) return [];
+
+  const firstRowLower = rows[0].map((c) =>
+    c.toLowerCase().replace(/[^a-z0-9]/g, '')
+  );
+  const hasHeader =
+    firstRowLower.includes('type') ||
+    firstRowLower.includes('questiontext') ||
+    firstRowLower.includes('question') ||
+    firstRowLower.includes('prompt') ||
+    firstRowLower.includes('optiona') ||
+    firstRowLower.includes('marks');
+
+  const dataRows = hasHeader ? rows.slice(1) : rows;
+  if (dataRows.length === 0) return [];
+
+  // Map column indices dynamically if custom headers are used, otherwise use standard template positions
+  const findColIdx = (names: string[], fallbackIdx: number): number => {
+    if (!hasHeader) return fallbackIdx;
+    const found = firstRowLower.findIndex((h) => names.includes(h));
+    return found >= 0 ? found : fallbackIdx;
+  };
+
+  const isCustomHeaderLayout =
+    hasHeader &&
+    firstRowLower[0] !== 'type' &&
+    (firstRowLower.includes('question') ||
+      firstRowLower.includes('questiontext') ||
+      firstRowLower.includes('prompt'));
+
+  const idxType = isCustomHeaderLayout ? findColIdx(['type', 'questiontype'], -1) : 0;
+  const idxMarks = isCustomHeaderLayout ? findColIdx(['marks', 'score', 'weightage', 'points'], -1) : 1;
+  const idxDiff = isCustomHeaderLayout ? findColIdx(['difficulty', 'level'], -1) : 2;
+  const idxText = isCustomHeaderLayout
+    ? findColIdx(['questiontext', 'question', 'prompt', 'problem', 'text'], 0)
+    : 3;
+  const idxOptA = isCustomHeaderLayout ? findColIdx(['optiona', 'opta', 'a'], 1) : 4;
+  const idxOptB = isCustomHeaderLayout ? findColIdx(['optionb', 'optb', 'b'], 2) : 5;
+  const idxOptC = isCustomHeaderLayout ? findColIdx(['optionc', 'optc', 'c'], 3) : 6;
+  const idxOptD = isCustomHeaderLayout ? findColIdx(['optiond', 'optd', 'd'], 4) : 7;
+  const idxCorrect = isCustomHeaderLayout
+    ? findColIdx(['correctoption', 'correct', 'answer', 'key', 'ans'], 5)
+    : 8;
+  const idxNote = isCustomHeaderLayout
+    ? findColIdx(['explanationorrubric', 'explanation', 'rubric', 'note'], -1)
+    : 9;
+  const idxLang = isCustomHeaderLayout
+    ? findColIdx(['programminglanguage', 'language', 'lang'], -1)
+    : 10;
+  const idxTc1In = isCustomHeaderLayout ? findColIdx(['testcase1input', 'sampleinput'], -1) : 11;
+  const idxTc1Out = isCustomHeaderLayout ? findColIdx(['testcase1output', 'sampleoutput'], -1) : 12;
+  const idxTc2In = isCustomHeaderLayout ? findColIdx(['testcase2input', 'hiddeninput'], -1) : 13;
+  const idxTc2Out = isCustomHeaderLayout ? findColIdx(['testcase2output', 'hiddenoutput'], -1) : 14;
+
+  const getCol = (cols: string[], index: number): string =>
+    index >= 0 && index < cols.length ? cols[index] || '' : '';
 
   const drafts: ParsedQuestionDraft[] = [];
-  for (let i = 1; i < lines.length; i++) {
-    const cols = splitCsvRow(lines[i]);
-    if (cols.length < 4) continue;
-    const rawType = (cols[0] || 'mcq').toLowerCase();
+  for (let i = 0; i < dataRows.length; i++) {
+    const cols = dataRows[i];
+    if (cols.length < 2) continue;
+    const rawType = (getCol(cols, idxType) || 'mcq').toLowerCase();
     const type: QuestionType =
       rawType.includes('prog') || rawType.includes('cod')
         ? 'programming'
         : rawType.includes('desc') || rawType.includes('theo')
         ? 'descriptive'
         : 'mcq';
-    const marks = Math.max(1, Number(cols[1]) || 10);
-    const diffRaw = cols[2] || 'Medium';
+    const marks = Math.max(1, Number(getCol(cols, idxMarks)) || 10);
+    const diffRaw = getCol(cols, idxDiff) || 'Medium';
     const difficulty: 'Easy' | 'Medium' | 'Hard' =
       diffRaw.toLowerCase() === 'easy'
         ? 'Easy'
         : diffRaw.toLowerCase() === 'hard'
         ? 'Hard'
         : 'Medium';
-    const text = cols[3] || `Question ${i}`;
-    const optA = cols[4] || 'Option A';
-    const optB = cols[5] || 'Option B';
-    const optC = cols[6] || 'Option C';
-    const optD = cols[7] || 'Option D';
-    const correctOpt = normalizeCorrectOption(cols[8] || 'A');
-    const note = cols[9] || '';
-    const lang = ((cols[10] || 'c').toLowerCase() || 'c') as ProgrammingLanguage;
-    const tc1In = cols[11] || '';
-    const tc1Out = cols[12] || '';
-    const tc2In = cols[13] || '';
-    const tc2Out = cols[14] || '';
+    const rawText = getCol(cols, idxText) || `Question ${i + 1}`;
+    const text = formatQuestionPromptForDisplay(rawText);
+    const optA = getCol(cols, idxOptA) || 'Option A';
+    const optB = getCol(cols, idxOptB) || 'Option B';
+    const optC = getCol(cols, idxOptC) || 'Option C';
+    const optD = getCol(cols, idxOptD) || 'Option D';
+    const correctOpt = normalizeCorrectOption(getCol(cols, idxCorrect) || 'A');
+    const note = getCol(cols, idxNote);
+    const lang = ((getCol(cols, idxLang) || 'c').toLowerCase() ||
+      'c') as ProgrammingLanguage;
+    const tc1In = getCol(cols, idxTc1In);
+    const tc1Out = getCol(cols, idxTc1Out);
+    const tc2In = getCol(cols, idxTc2In);
+    const tc2Out = getCol(cols, idxTc2Out);
 
     const explicitTcs: TestCase[] = [];
     if (tc1In || tc1Out) {
@@ -1911,6 +2129,13 @@ function detectLanguageFromContext(
 function isCodeLine(line: string): boolean {
   const t = line.trim();
   if (!t) return false;
+  if (
+    /^(?:\(([A-Da-d])\)|([A-Da-d])[.)\]:-]|Option\s+([A-Da-d])\s*[:.-])\s+/.test(
+      t
+    )
+  ) {
+    return false;
+  }
   return (
     /^#include\s*[<"]/.test(t) ||
     /^#define\s+/.test(t) ||
@@ -1935,7 +2160,8 @@ function isCodeLine(line: string): boolean {
 /**
  * Parses unstructured or structured question paper text (extracted from PDF or TXT)
  * into editable ParsedQuestionDraft objects.
- * Supports MCQ papers, Descriptive papers, and C / C++ / Python / Java / SQL coding sets
+ * Supports MCQ papers (including MCQs containing multi-line or inline C/C++/Java/Python code),
+ * Descriptive papers, and C / C++ / Python / Java / SQL coding sets
  * (including multi-program PDFs with numbered `1.`, `2.` or lettered `a.`, `b.`, `c.`, `d.`, `e.`, `f.` headers).
  */
 export function parseQuestionsFromText(
@@ -1945,9 +2171,10 @@ export function parseQuestionsFromText(
   const sanitized = sanitizeExtractedText(rawText);
   const lines = sanitized
     .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(
-      (l) =>
+    .map((l) => l.replace(/\s+$/, ''))
+    .filter((rawLine) => {
+      const l = rawLine.trim();
+      return (
         l.length > 0 &&
         !l.startsWith('---') &&
         !/^PANIMALAR ENGINEERING COLLEGE/i.test(l) &&
@@ -1956,7 +2183,8 @@ export function parseQuestionsFromText(
         !/^Page\s+\d+\s*(?:of\s*\d+)?$/i.test(l) &&
         !/^(?:Hard|Medium|Easy)\s+C[\s-]*Programs?$/i.test(l) &&
         !/^Set\s*[-#:]?\s*\d+$/i.test(l)
-    );
+      );
+    });
 
   if (lines.length === 0) {
     return [];
@@ -1966,7 +2194,9 @@ export function parseQuestionsFromText(
   const fileIsHard = /\bhard\b/i.test(fileName);
   const fileIsMedium = /\bmedium\b/i.test(fileName);
   const fileIsEasy = /\beasy\b/i.test(fileName);
-  const documentHasCode = lines.some((l) => /^#include\s*[<"]/.test(l) || isCodeLine(l));
+  const documentHasCode = lines.some(
+    (l) => /^#include\s*[<"]/.test(l.trim()) || isCodeLine(l)
+  );
   const fileLooksLikeCodingSet =
     /\b(?:programs?|coding|lab|problems?)\b/i.test(fileName) ||
     fileDefaultLang === 'c' ||
@@ -1976,20 +2206,25 @@ export function parseQuestionsFromText(
   const blocks: string[][] = [];
   let currentBlock: string[] = [];
   let currentBlockHasCodeEnd = false;
+  let currentBlockHasMcqOption = false;
 
   const numberedQuestionStartRegex =
     /^(?:Q\.?\s*\d+|Question\s*\d+|Program\s*[-#:]?\s*\d+|Problem\s*[-#:]?\s*\d+|Ex(?:ercise|\.)?\s*(?:No\.?)?\s*\d+|Task\s*\d+|\d+\s*[.)])\s*[:.-]?\s*(.*)$/i;
 
   // In coding sheets like medium_c_programs.pdf, sub-programs are titled "a. Sum of Two Numbers", "b. Find the Last Digit", ..., "f. Print Fibonacci Series"
   const letteredProgramHeaderRegex =
-    /^[a-z]\s*[.)]\s+(?:Sum|Find|Reverse|Print|Check|Move|Rotate|Write|Calculate|Count|Swap|Sort|Search|Convert|Generate|Check|Multiply|Largest|Smallest|Area|Length|Fibonacci|Prime|Factorial|Palindrome)\b/i;
+    /^[a-z]\s*[.)]\s+(?:Sum|Find|Reverse|Print|Check|Move|Rotate|Write|Calculate|Count|Swap|Sort|Search|Convert|Generate|Multiply|Largest|Smallest|Area|Length|Fibonacci|Prime|Factorial|Palindrome)\b/i;
 
   const unnumberedPromptStartRegex =
     /^(?:AIM\s*[:=-]|Write\s+a\s+(?:C|C\+\+|Python|Java)?\s*program\b|Develop\s+a\s+(?:C|C\+\+|Python|Java)?\s*program\b|Implement\s+a\s+(?:C|function|program)\b)/i;
 
+  const singleOptionLineRegex =
+    /^(?:\(([A-Da-d])\)|([A-Da-d])[.)\]:-]|Option\s+([A-Da-d])\s*[:.-])\s*(.+)$/;
+
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const nextLine = lines[i + 1] || '';
+    const rawLine = lines[i];
+    const line = rawLine.trim();
+    const nextLine = (lines[i + 1] || '').trim();
 
     const isNumberedQuestionStart =
       numberedQuestionStartRegex.test(line) &&
@@ -1998,9 +2233,9 @@ export function parseQuestionsFromText(
 
     const isLetteredProgramStart =
       !isCodeLine(line) &&
+      !currentBlockHasMcqOption &&
       (letteredProgramHeaderRegex.test(line) ||
-        (/^[a-z]\s*\.\s+[A-Z]/.test(line) &&
-          (currentBlockHasCodeEnd || /^#include\s*[<"]/.test(nextLine))));
+        (/^[a-f]\s*\.\s+[A-Z]/.test(line) && /^#include\s*[<"]/.test(nextLine)));
 
     const isNewUnnumberedProgram =
       unnumberedPromptStartRegex.test(line) && currentBlock.length >= 2;
@@ -2008,7 +2243,8 @@ export function parseQuestionsFromText(
     const isSecondIncludeBlock =
       /^#include\s*[<"]/.test(line) &&
       currentBlockHasCodeEnd &&
-      currentBlock.some((l) => /^#include\s*[<"]/.test(l));
+      !currentBlockHasMcqOption &&
+      currentBlock.some((l) => /^#include\s*[<"]/.test(l.trim()));
 
     if (
       isNumberedQuestionStart ||
@@ -2019,12 +2255,16 @@ export function parseQuestionsFromText(
       if (currentBlock.length > 0) {
         blocks.push(currentBlock);
       }
-      currentBlock = [line];
+      currentBlock = [rawLine];
       currentBlockHasCodeEnd = false;
+      currentBlockHasMcqOption = false;
     } else {
-      currentBlock.push(line);
+      currentBlock.push(rawLine);
       if (/^return\s+0\s*;/.test(line) || line === '}') {
         currentBlockHasCodeEnd = true;
+      }
+      if (singleOptionLineRegex.test(line) && !letteredProgramHeaderRegex.test(line)) {
+        currentBlockHasMcqOption = true;
       }
     }
   }
@@ -2036,18 +2276,18 @@ export function parseQuestionsFromText(
   if (
     blocks.length > 1 &&
     blocks[0].length <= 2 &&
-    !numberedQuestionStartRegex.test(blocks[0][0]) &&
-    !letteredProgramHeaderRegex.test(blocks[0][0]) &&
+    !numberedQuestionStartRegex.test(blocks[0][0].trim()) &&
+    !letteredProgramHeaderRegex.test(blocks[0][0].trim()) &&
     !blocks[0].some((l) => isCodeLine(l)) &&
-    (numberedQuestionStartRegex.test(blocks[1][0]) ||
-      letteredProgramHeaderRegex.test(blocks[1][0]))
+    (numberedQuestionStartRegex.test(blocks[1][0].trim()) ||
+      letteredProgramHeaderRegex.test(blocks[1][0].trim()))
   ) {
     blocks.shift();
   }
 
   return blocks.map((blockLines, idx): ParsedQuestionDraft => {
     const blockJoined = blockLines.join('\n');
-    const headerLine = blockLines[0] || '';
+    const headerLine = (blockLines[0] || '').trim();
     let cleanedFirstLine = headerLine.replace(
       /^(?:Q\.?\s*\d+|Question\s*\d+|Program\s*[-#:]?\s*\d+|Problem\s*[-#:]?\s*\d+|Ex(?:ercise|\.)?\s*(?:No\.?)?\s*\d+|Task\s*\d+|\d+\s*[.)]|[a-zA-Z]\s*\.\s+(?=[A-Z])|AIM)\s*[:.-]?\s*/i,
       ''
@@ -2112,11 +2352,15 @@ export function parseQuestionsFromText(
       }
     }
 
-    cleanedFirstLine = cleanedFirstLine.replace(/\[.*?\]/g, '').trim();
+    cleanedFirstLine = cleanedFirstLine
+      .replace(/\[(?:mcq|multiple choice|descriptive|theory|essay|short answer|programming|coding|code|\d+\s*(?:marks?|pts?|points?)|difficulty\s*:\s*(?:easy|medium|hard)|language\s*:\s*[a-z0-9+#]+)\]/gi, '')
+      .trim();
 
+    const orderedPromptAndCodeLines: string[] = [];
     const promptLines: string[] = [];
     const extractedCodeLines: string[] = [];
     if (cleanedFirstLine) {
+      orderedPromptAndCodeLines.push(cleanedFirstLine);
       if (isCodeLine(cleanedFirstLine)) {
         extractedCodeLines.push(cleanedFirstLine);
       } else {
@@ -2152,35 +2396,55 @@ export function parseQuestionsFromText(
       | 'constraints';
     let activeField: ActiveField = 'prompt';
 
-    const blockContainsIncludeOrMain = blockLines.some(
-      (l) =>
-        /^#include\s*[<"]/.test(l) ||
-        /^(?:int|void)\s+main\s*\(/.test(l)
-    );
+    const cleanOptionValue = (
+      rawOpt: string,
+      letter: string
+    ): string => {
+      let cleaned = rawOpt.trim();
+      if (
+        /\[✓\s*CORRECT/i.test(cleaned) ||
+        /\(Correct\)$/i.test(cleaned) ||
+        /✓\s*Key$/i.test(cleaned)
+      ) {
+        cleaned = cleaned
+          .replace(/\[✓\s*CORRECT.*?\]/gi, '')
+          .replace(/\(Correct\)$/i, '')
+          .replace(/✓\s*Key$/i, '')
+          .trim();
+        correctOpt = normalizeCorrectOption(letter);
+      }
+      return cleaned;
+    };
 
     for (let i = 1; i < blockLines.length; i++) {
-      const line = blockLines[i];
+      const rawLine = blockLines[i];
+      const line = rawLine.trim();
 
-      const optMatch = line.match(
-        /^(?:\(?([A-Da-d])\)?[.)\]:-]\s+|Option\s+([A-Da-d])\s*[:.-]\s*)(.+)$/
+      // Check for inline options on a single line: e.g. "A) Opt1   B) Opt2   C) Opt3   D) Opt4"
+      const inlineAllOptsMatch = line.match(
+        /^(?:\(?A\)|A[.)\]:-])\s*(.+?)\s+(?:\(?B\)|B[.)\]:-])\s*(.+?)(?:\s+(?:\(?C\)|C[.)\]:-])\s*(.+?))?(?:\s+(?:\(?D\)|D[.)\]:-])\s*(.+))?$/i
       );
-      if (
-        optMatch &&
-        extractedCodeLines.length === 0 &&
-        !blockContainsIncludeOrMain
-      ) {
-        const letter = (optMatch[1] || optMatch[2]).toUpperCase();
-        let optText = optMatch[3].trim();
-        if (
-          /\[✓\s*CORRECT/i.test(optText) ||
-          /\(Correct\)$/i.test(optText)
-        ) {
-          optText = optText
-            .replace(/\[✓\s*CORRECT.*?\]/gi, '')
-            .replace(/\(Correct\)$/i, '')
-            .trim();
-          correctOpt = normalizeCorrectOption(letter);
+      if (inlineAllOptsMatch && explicitType !== 'programming') {
+        optA = cleanOptionValue(inlineAllOptsMatch[1], 'A');
+        optB = cleanOptionValue(inlineAllOptsMatch[2], 'B');
+        if (inlineAllOptsMatch[3]) {
+          optC = cleanOptionValue(inlineAllOptsMatch[3], 'C');
         }
+        if (inlineAllOptsMatch[4]) {
+          optD = cleanOptionValue(inlineAllOptsMatch[4], 'D');
+        }
+        activeField = 'opt-d';
+        continue;
+      }
+
+      const optMatch = line.match(singleOptionLineRegex);
+      if (optMatch && explicitType !== 'programming') {
+        const letter = (
+          optMatch[1] ||
+          optMatch[2] ||
+          optMatch[3]
+        ).toUpperCase();
+        const optText = cleanOptionValue(optMatch[4], letter);
         if (letter === 'A') {
           optA = optText;
           activeField = 'opt-a';
@@ -2299,9 +2563,7 @@ export function parseQuestionsFromText(
         continue;
       }
 
-      if (isCodeLine(line) || extractedCodeLines.length > 0) {
-        extractedCodeLines.push(line);
-      } else if (activeField === 'explanation') {
+      if (activeField === 'explanation') {
         explanation = `${explanation} ${line}`.trim();
       } else if (activeField === 'guidance') {
         answerLengthGuidance = `${answerLengthGuidance} ${line}`.trim();
@@ -2322,21 +2584,24 @@ export function parseQuestionsFromText(
       } else if (activeField === 'opt-d') {
         optD = `${optD} ${line}`.trim();
       } else {
-        promptLines.push(line);
+        orderedPromptAndCodeLines.push(rawLine);
+        if (isCodeLine(line) || extractedCodeLines.length > 0) {
+          extractedCodeLines.push(rawLine);
+        } else {
+          promptLines.push(line);
+        }
       }
     }
 
     const hasValidMcqOptions = Boolean(optA.trim() && optB.trim());
 
     let finalType: QuestionType;
-    if (explicitType === 'mcq' && hasValidMcqOptions) {
+    if (explicitType === 'mcq' || hasValidMcqOptions) {
       finalType = 'mcq';
     } else if (explicitType === 'programming') {
       finalType = 'programming';
     } else if (explicitType === 'descriptive') {
       finalType = 'descriptive';
-    } else if (hasValidMcqOptions && !blockContainsIncludeOrMain) {
-      finalType = 'mcq';
     } else if (blockHasCode || extractedCodeLines.length > 0) {
       finalType = 'programming';
     } else {
@@ -2344,8 +2609,16 @@ export function parseQuestionsFromText(
       if (marks === 10) marks = 15;
     }
 
+    // If an MCQ was detected in a file that otherwise had C code, keep standard MCQ marks (10) unless explicitly set
+    if (finalType === 'mcq' && marks === 20 && !/\[20\s*marks?\]/i.test(headerLine)) {
+      marks = 10;
+    }
+
     const rawPromptJoined = promptLines.join(' ').trim();
     const extractedCodeJoined = extractedCodeLines.join('\n');
+    const preservedMultiLinePrompt = formatQuestionPromptForDisplay(
+      orderedPromptAndCodeLines.join('\n').trim()
+    );
 
     if (finalType === 'programming') {
       const analyzed = analyzeProgrammingQuestionSpec(
@@ -2385,7 +2658,7 @@ export function parseQuestionsFromText(
     return {
       tempId: `imp-txt-${Date.now()}-${idx}`,
       type: finalType,
-      text: rawPromptJoined || `Question ${idx + 1}`,
+      text: preservedMultiLinePrompt || rawPromptJoined || `Question ${idx + 1}`,
       marks,
       difficulty,
       explanation,

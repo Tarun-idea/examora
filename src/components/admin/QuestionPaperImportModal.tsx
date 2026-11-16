@@ -35,6 +35,7 @@ import {
   createHardCProgramsDrafts,
   createMediumCProgramsDrafts,
   analyzeProgrammingQuestionSpec,
+  formatQuestionPromptForDisplay,
   generateSampleQuestionPaperPdfBlob,
   generateSampleQuestionPaperCsv,
   SAMPLE_QUESTION_PAPER_TEXT,
@@ -317,7 +318,10 @@ export const QuestionPaperImportModal: React.FC<
     const payloads: Array<Omit<Question, 'id' | 'examId' | 'subjectId'>> =
       drafts.map((d) => ({
         type: d.type,
-        text: d.text.trim() || 'Untitled Question',
+        text:
+          formatQuestionPromptForDisplay(
+            d.text.replace(/^\s*\r?\n+|\s+$/g, '')
+          ) || 'Untitled Question',
         marks: Math.max(1, Number(d.marks) || 10),
         difficulty: d.difficulty,
         explanation: d.explanation?.trim() || undefined,
@@ -784,15 +788,31 @@ export const QuestionPaperImportModal: React.FC<
                   {/* Prompt */}
                   <div>
                     <label className="text-[11px] font-bold text-slate-500 block mb-1">
-                      Question Problem Statement:
+                      Question Problem Statement (Multi-line &amp; Code Structure Preserved):
                     </label>
                     <textarea
-                      rows={2}
+                      rows={4}
                       value={d.text}
                       onChange={(e) =>
                         updateDraft(d.tempId, { text: e.target.value })
                       }
-                      className="w-full p-2.5 rounded-xl border border-slate-200 text-xs font-semibold text-slate-900 focus:outline-none focus:border-blue-600"
+                      onKeyDown={(e) => {
+                        if (e.key === 'Tab') {
+                          e.preventDefault();
+                          const start = e.currentTarget.selectionStart;
+                          const end = e.currentTarget.selectionEnd;
+                          const nextVal =
+                            d.text.substring(0, start) +
+                            '    ' +
+                            d.text.substring(end);
+                          updateDraft(d.tempId, { text: nextVal });
+                          requestAnimationFrame(() => {
+                            e.currentTarget.selectionStart =
+                              e.currentTarget.selectionEnd = start + 4;
+                          });
+                        }
+                      }}
+                      className="w-full p-2.5 rounded-xl border border-slate-200 text-xs font-mono font-semibold leading-relaxed text-slate-900 focus:outline-none focus:border-blue-600 whitespace-pre-wrap"
                     />
                   </div>
 
@@ -1194,14 +1214,14 @@ export const QuestionPaperImportModal: React.FC<
                       className="p-3.5 rounded-xl border border-slate-200 space-y-2.5"
                     >
                       <div className="flex items-start justify-between gap-3">
-                        <div className="text-xs sm:text-sm font-bold text-slate-900">
+                        <div className="text-xs sm:text-sm font-bold text-slate-900 whitespace-pre-wrap font-mono leading-relaxed">
                           <span className="font-mono text-blue-600 mr-1.5">
                             Q{idx + 1}.
                           </span>
-                          <span className="uppercase text-[10px] px-2 py-0.5 rounded bg-slate-100 text-slate-700 mr-2">
+                          <span className="uppercase text-[10px] px-2 py-0.5 rounded bg-slate-100 text-slate-700 mr-2 font-sans">
                             {d.type}
                           </span>
-                          {d.text}
+                          {formatQuestionPromptForDisplay(d.text)}
                         </div>
                         <span className="text-xs font-mono font-bold text-slate-700 shrink-0">
                           [{d.marks} Marks]
@@ -1320,8 +1340,8 @@ export const QuestionPaperImportModal: React.FC<
                         {activeDraftQ.marks} Marks
                       </span>
                     </div>
-                    <div className="text-sm sm:text-base font-bold text-slate-900">
-                      {activeDraftQ.text}
+                    <div className="text-sm sm:text-base font-bold text-slate-900 whitespace-pre-wrap font-mono leading-relaxed">
+                      {formatQuestionPromptForDisplay(activeDraftQ.text)}
                     </div>
                     {activeDraftQ.type === 'mcq' && (
                       <div className="space-y-2">

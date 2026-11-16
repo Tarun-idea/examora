@@ -30,7 +30,10 @@ import {
 } from '../../utils/examLogic.ts';
 import { QuestionPaperImportModal } from './QuestionPaperImportModal.tsx';
 import { PrintablePaperModal } from './PrintablePaperModal.tsx';
-import { analyzeProgrammingQuestionSpec } from '../../utils/questionPaperParser.ts';
+import {
+  analyzeProgrammingQuestionSpec,
+  formatQuestionPromptForDisplay,
+} from '../../utils/questionPaperParser.ts';
 
 interface QuestionBankProps {
   initialExamId?: string;
@@ -158,7 +161,7 @@ export const QuestionBank: React.FC<QuestionBankProps> = ({ initialExamId }) => 
     setEditingQuestionId(q.id);
     setBuilderExamId(q.examId || state.exams[0]?.id || '');
     setQType(q.type);
-    setQText(q.text);
+    setQText(formatQuestionPromptForDisplay(q.text));
     setMarks(q.marks);
     setDifficulty(q.difficulty);
     setExplanation(q.explanation || '');
@@ -297,7 +300,9 @@ export const QuestionBank: React.FC<QuestionBankProps> = ({ initialExamId }) => 
       examId: targetExam.id,
       subjectId: targetExam.subjectId,
       type: qType,
-      text: qText.trim(),
+      text: formatQuestionPromptForDisplay(
+        qText.replace(/^\s*\r?\n+|\s+$/g, '')
+      ),
       marks: Math.max(1, Number(marks) || 10),
       difficulty,
       explanation: explanation.trim() || undefined,
@@ -622,16 +627,37 @@ export const QuestionBank: React.FC<QuestionBankProps> = ({ initialExamId }) => 
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Question / Problem Prompt *
-                </label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-xs font-bold text-slate-700">
+                    Question / Problem Prompt *
+                  </label>
+                  <span className="text-[11px] text-slate-400">
+                    Multi-line text &amp; program code supported (Tab indents)
+                  </span>
+                </div>
                 <textarea
-                  rows={3}
+                  rows={6}
                   required
                   value={qText}
                   onChange={(e) => setQText(e.target.value)}
-                  placeholder="Enter question statement or programming problem specification..."
-                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-xs text-slate-900 focus:outline-none focus:border-blue-600"
+                  onKeyDown={(e) => {
+                    if (e.key === 'Tab') {
+                      e.preventDefault();
+                      const start = e.currentTarget.selectionStart;
+                      const end = e.currentTarget.selectionEnd;
+                      const nextVal =
+                        qText.substring(0, start) +
+                        '    ' +
+                        qText.substring(end);
+                      setQText(nextVal);
+                      requestAnimationFrame(() => {
+                        e.currentTarget.selectionStart =
+                          e.currentTarget.selectionEnd = start + 4;
+                      });
+                    }
+                  }}
+                  placeholder="Enter question statement or paste multi-line program code exactly as it should appear..."
+                  className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 text-xs font-mono leading-relaxed text-slate-900 focus:outline-none focus:border-blue-600 whitespace-pre-wrap"
                 />
               </div>
             </div>
@@ -1050,9 +1076,10 @@ export const QuestionBank: React.FC<QuestionBankProps> = ({ initialExamId }) => 
                       {q.marks} Marks
                     </span>
                   </div>
-                  <h3 className="text-sm sm:text-base font-bold text-slate-900">
-                    Q{index + 1}: {q.text}
-                  </h3>
+                  <div className="text-sm sm:text-base font-bold text-slate-900 whitespace-pre-wrap font-mono leading-relaxed">
+                    <span className="font-sans">Q{index + 1}: </span>
+                    {formatQuestionPromptForDisplay(q.text)}
+                  </div>
                 </div>
 
                 <div className="flex items-center gap-1.5 shrink-0">

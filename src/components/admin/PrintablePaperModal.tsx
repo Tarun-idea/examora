@@ -31,6 +31,7 @@ import {
   STARTER_CODE_TEMPLATES,
   TestCaseResult,
 } from '../../utils/examLogic.ts';
+import { formatQuestionPromptForDisplay } from '../../utils/questionPaperParser.ts';
 
 interface PrintablePaperModalProps {
   exam: DomainExam | StoreExam;
@@ -75,7 +76,9 @@ export const PrintablePaperModal: React.FC<PrintablePaperModalProps> = ({
       raw.questionType ||
       (raw.type === 'programming' ? 'coding' : raw.type) ||
       'mcq';
-    const qText = raw.questionText || raw.text || '';
+    const qText = formatQuestionPromptForDisplay(
+      raw.questionText || raw.text || ''
+    );
     const options: string[] | undefined = Array.isArray(raw.options)
       ? raw.options.map((o: any) => (typeof o === 'string' ? o : o.text))
       : undefined;
@@ -179,7 +182,9 @@ export const PrintablePaperModal: React.FC<PrintablePaperModalProps> = ({
           q.questionType === 'coding' ? ` [Language: ${q.codingLanguage}]` : ''
         }`
       );
-      lines.push(q.questionText);
+      q.questionText.split(/\r?\n/).forEach((qLine) => {
+        lines.push(qLine);
+      });
       if (q.questionType === 'mcq' && q.options) {
         q.options.forEach((opt, oIdx) => {
           const letter = String.fromCharCode(65 + oIdx);
@@ -289,6 +294,12 @@ export const PrintablePaperModal: React.FC<PrintablePaperModalProps> = ({
       ? 'OFFICIAL_ANSWER_KEY_AND_RUBRIC'
       : 'CANDIDATE_QUESTION_PAPER';
 
+    const escapeHtml = (str: string) =>
+      String(str || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+
     const questionsHtml = normalizedQuestions
       .map((q, idx) => {
         let detailsHtml = '';
@@ -302,7 +313,7 @@ export const PrintablePaperModal: React.FC<PrintablePaperModalProps> = ({
               }; border-radius: 6px; background: ${
                 isCorrect ? '#ecfdf5' : '#ffffff'
               }; font-size: 13px;">
-                <strong>(${letter})</strong> ${opt} ${
+                <strong>(${letter})</strong> ${escapeHtml(opt)} ${
                 isCorrect
                   ? '<strong style="color:#047857; margin-left:8px;">[✓ CORRECT ANSWER]</strong>'
                   : ''
@@ -314,12 +325,12 @@ export const PrintablePaperModal: React.FC<PrintablePaperModalProps> = ({
         } else if (q.questionType === 'descriptive') {
           detailsHtml = `
             <div style="margin-top:8px; font-size:12px; color:#475569;">
-              <em>Expected Length: ${q.answerLengthGuide || '150-250 words'}</em>
+              <em>Expected Length: ${escapeHtml(q.answerLengthGuide || '150-250 words')}</em>
             </div>
             ${
               includeAnswerKey && q.rubric
                 ? `<div style="margin-top:6px; padding:8px; background:#fffbeb; border:1px solid #fde68a; border-radius:6px; font-size:12px; color:#92400e;">
-                    <strong>Official Grading Rubric:</strong> ${q.rubric}
+                    <strong>Official Grading Rubric:</strong> ${escapeHtml(q.rubric)}
                   </div>`
                 : `<div style="margin-top:10px; height:90px; border:1px dashed #94a3b8; border-radius:6px; padding:8px; font-size:11px; color:#94a3b8;">Candidate Answer Space</div>`
             }
@@ -330,7 +341,7 @@ export const PrintablePaperModal: React.FC<PrintablePaperModalProps> = ({
             .map(
               (tc, tIdx) =>
                 `<div style="font-family:monospace; font-size:12px; margin-top:4px; padding:6px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:4px;">
-                  <strong>${tc.isHidden ? 'Hidden' : 'Sample'} Case #${tIdx + 1} (${tc.marks} marks):</strong> Input: <code>${tc.input}</code> | Expected Output: <code>${tc.expectedOutput}</code>
+                  <strong>${tc.isHidden ? 'Hidden' : 'Sample'} Case #${tIdx + 1} (${tc.marks} marks):</strong> Input: <code>${escapeHtml(tc.input)}</code> | Expected Output: <code>${escapeHtml(tc.expectedOutput)}</code>
                 </div>`
             )
             .join('');
@@ -345,16 +356,14 @@ export const PrintablePaperModal: React.FC<PrintablePaperModalProps> = ({
         const explanationHtml =
           includeAnswerKey && q.explanation
             ? `<div style="margin-top:6px; font-size:12px; color:#1e40af; background:#eff6ff; padding:6px 10px; border-radius:6px;">
-                <strong>Solution Note:</strong> ${q.explanation}
+                <strong>Solution Note:</strong> ${escapeHtml(q.explanation)}
               </div>`
             : '';
 
         return `
           <div style="padding: 14px 0; border-bottom: 1px solid #e2e8f0; page-break-inside: avoid;">
             <div style="display:flex; justify-content:space-between; align-items:flex-start;">
-              <div style="font-weight:700; font-size:14px; color:#0f172a;">
-                Q${idx + 1}. [${q.questionType.toUpperCase()}] ${q.questionText}
-              </div>
+              <div style="font-weight:700; font-size:14px; color:#0f172a; white-space:pre-wrap; font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;">Q${idx + 1}. [${q.questionType.toUpperCase()}] ${escapeHtml(q.questionText)}</div>
               <div style="font-weight:700; font-size:12px; color:#334155; white-space:nowrap; margin-left:12px;">
                 [${q.marks} Marks]
               </div>
@@ -667,11 +676,11 @@ export const PrintablePaperModal: React.FC<PrintablePaperModalProps> = ({
                     className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-4 space-y-3"
                   >
                     <div className="flex items-start justify-between gap-4">
-                      <div className="text-sm font-bold text-slate-900 dark:text-white leading-snug">
+                      <div className="text-sm font-bold text-slate-900 dark:text-white leading-relaxed whitespace-pre-wrap font-mono">
                         <span className="font-mono text-blue-600 dark:text-blue-400 mr-1.5">
                           Q{idx + 1}.
                         </span>
-                        <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 mr-2">
+                        <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 mr-2 font-sans">
                           {q.questionType}
                         </span>
                         {q.questionText}
@@ -832,7 +841,7 @@ export const PrintablePaperModal: React.FC<PrintablePaperModalProps> = ({
                       </span>
                     </div>
 
-                    <div className="text-base font-bold text-slate-900 leading-relaxed">
+                    <div className="text-base font-bold text-slate-900 leading-relaxed whitespace-pre-wrap font-mono">
                       {activeStudentQ.questionText}
                     </div>
 

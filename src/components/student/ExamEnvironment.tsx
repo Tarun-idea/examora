@@ -25,6 +25,7 @@ import {
   PROGRAMMING_LANGUAGES,
   STARTER_CODE_TEMPLATES,
 } from '../../utils/examLogic.ts';
+import { formatQuestionPromptForDisplay } from '../../utils/questionPaperParser.ts';
 
 interface ExamEnvironmentProps {
   examId: string;
@@ -661,8 +662,8 @@ export const ExamEnvironment: React.FC<ExamEnvironmentProps> = ({
               </div>
 
               {/* Question Prompt */}
-              <div className="text-base sm:text-lg font-bold text-slate-900 leading-relaxed">
-                {currentQuestion.text}
+              <div className="text-base sm:text-lg font-bold text-slate-900 leading-relaxed whitespace-pre-wrap font-mono">
+                {formatQuestionPromptForDisplay(currentQuestion.text)}
               </div>
 
               {/* A. MCQ Answer Area */}

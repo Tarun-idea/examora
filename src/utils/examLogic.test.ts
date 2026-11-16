@@ -13,6 +13,9 @@ import {
 import {
   createHardCProgramsDrafts,
   createMediumCProgramsDrafts,
+  formatQuestionPromptForDisplay,
+  parseQuestionsFromText,
+  parseQuestionsFromCsv,
 } from './questionPaperParser.ts';
 
 test('getDeterministicQuestionOrder returns same order on repeated calls (refresh safe) and differs across students', () => {
@@ -771,5 +774,75 @@ test('normalizeAndDedupeSections and mergeSharedPlatformState preserve cleared o
   assert.deepEqual(customExam.assignedCohorts, []);
   assert.deepEqual(customExam.assignedStudentIds, ['stu-a1']);
 });
+
+test('formatQuestionPromptForDisplay preserves user-typed multi-line code as-is and formats flattened single-line C code into multi-line structure', () => {
+  // 1. User-typed multi-line MCQ with C code in Question Box
+  const userTypedMultiLine = `What will be the output of the following C code?
+
+#include <stdio.h>
+int main() {
+    int y = 10000;
+    int y = 34;
+    printf("Hello World! %d\\n", y);
+    return 0;
+}`;
+  assert.equal(formatQuestionPromptForDisplay(userTypedMultiLine), userTypedMultiLine);
+
+  // 2. Flattened single-line C code from legacy or single-line PDF extraction
+  const flattenedSingleLine =
+    'What will be the output of the following C code? #include <stdio.h> int main() { int y = 10000; int y = 34; printf("Hello World! %d\\n", y); return 0; }';
+  const formatted = formatQuestionPromptForDisplay(flattenedSingleLine);
+  assert.ok(formatted.includes('What will be the output of the following C code?\n\n#include <stdio.h>\nint main() {'));
+  assert.ok(formatted.includes('    int y = 10000;\n    int y = 34;\n    printf("Hello World! %d\\n", y);\n    return 0;\n}'));
+});
+
+test('parseQuestionsFromText and parseQuestionsFromCsv accurately parse MCQs containing multi-line C code and options', () => {
+  const sampleMcqWithCodeText = `
+Q1. [MCQ] [10 Marks] [Difficulty: Easy] What will be the output of the following C code?
+#include <stdio.h>
+int main() {
+    int y = 10000;
+    int y = 34;
+    printf("Hello World! %d\\n", y);
+    return 0;
+}
+A) Compile time error
+B) Hello World! 34
+C) Hello World! 1000
+D) Hello World! followed by a junk value
+Answer: A
+Explanation: Redefinition of variable y in the same scope causes a compile time error.
+`;
+
+  const parsedFromText = parseQuestionsFromText(sampleMcqWithCodeText);
+  assert.equal(parsedFromText.length, 1);
+  assert.equal(parsedFromText[0].type, 'mcq');
+  assert.equal(parsedFromText[0].optA, 'Compile time error');
+  assert.equal(parsedFromText[0].optB, 'Hello World! 34');
+  assert.equal(parsedFromText[0].optC, 'Hello World! 1000');
+  assert.equal(parsedFromText[0].optD, 'Hello World! followed by a junk value');
+  assert.equal(parsedFromText[0].correctOpt, 'opt-a');
+  assert.ok(parsedFromText[0].text.includes('#include <stdio.h>\nint main() {'));
+  assert.ok(parsedFromText[0].text.includes('    int y = 10000;'));
+
+  // Multi-line quoted CSV cell containing C code
+  const csvWithMultiLineCode = `Type,Marks,Difficulty,QuestionText,OptionA,OptionB,OptionC,OptionD,CorrectOption,ExplanationOrRubric
+mcq,10,Easy,"What will be the output of the following C code?
+#include <stdio.h>
+int main() {
+    int y = 10000;
+    int y = 34;
+    printf(""Hello World! %d\\n"", y);
+    return 0;
+}",Compile time error,Hello World! 34,Hello World! 1000,Hello World! followed by a junk value,A,Variable y is redefined`;
+
+  const parsedFromCsv = parseQuestionsFromCsv(csvWithMultiLineCode);
+  assert.equal(parsedFromCsv.length, 1);
+  assert.equal(parsedFromCsv[0].type, 'mcq');
+  assert.equal(parsedFromCsv[0].optA, 'Compile time error');
+  assert.equal(parsedFromCsv[0].correctOpt, 'opt-a');
+  assert.ok(parsedFromCsv[0].text.includes('#include <stdio.h>\nint main() {'));
+});
+
 
 
