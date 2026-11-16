@@ -295,10 +295,10 @@ export const StudentResultsView: React.FC<StudentResultsViewProps> = ({
             <div className="border-[2px] border-emerald-200 rounded-lg p-5 sm:p-8 relative overflow-hidden">
               {/* Centered Institutional Crest Watermark */}
               <img
-                src="/assets/panimalar-crest.png"
+                src="/assets/aistudio/pec-logo_afc415db.png"
                 alt=""
                 aria-hidden="true"
-                className="pointer-events-none select-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-64 sm:w-80 h-auto object-contain opacity-[0.15] z-0"
+                className="pointer-events-none select-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-64 sm:w-80 h-auto object-contain opacity-[0.24] z-0"
               />
 
               <div className="relative z-10 space-y-5">
@@ -306,7 +306,7 @@ export const StudentResultsView: React.FC<StudentResultsViewProps> = ({
                 <div className="grid grid-cols-1 sm:grid-cols-12 items-start gap-3">
                   <div className="sm:col-span-5 flex items-center gap-2.5 text-left">
                     <img
-                      src="/assets/panimalar-crest.png"
+                      src="/assets/aistudio/pec-logo_afc415db.png"
                       alt="Panimalar Engineering College Emblem"
                       className="w-12 h-12 sm:w-14 sm:h-14 object-contain shrink-0"
                     />

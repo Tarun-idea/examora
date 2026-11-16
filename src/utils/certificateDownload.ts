@@ -18,7 +18,7 @@ export interface PrintableCertificatePayload {
   remarks?: string;
 }
 
-const DEFAULT_CREST_URL = '/assets/panimalar-crest.png';
+const DEFAULT_CREST_URL = '/assets/aistudio/pec-logo_afc415db.png';
 
 let preloadedCrestImg: HTMLImageElement | null = null;
 if (typeof window !== 'undefined' && typeof Image !== 'undefined') {
@@ -64,6 +64,9 @@ function renderCertificateToCanvas(
   const ctx = canvas.getContext('2d');
 
   if (ctx) {
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+
     const palette = {
       blue: {
         primary: '#1D4ED8',
@@ -118,16 +121,18 @@ function renderCertificateToCanvas(
 
     // 4b. Large Centered Institutional Crest Watermark in Background
     if (crestImg) {
-      const wmHeight = 720;
+      const wmHeight = 640;
       const wmWidth = Math.round(
         wmHeight * (crestImg.naturalWidth / crestImg.naturalHeight)
       );
       ctx.save();
-      ctx.globalAlpha = 0.16;
+      ctx.globalAlpha = 0.24;
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
       ctx.drawImage(
         crestImg,
-        (canvas.width - wmWidth) / 2,
-        165,
+        Math.round((canvas.width - wmWidth) / 2),
+        Math.round((canvas.height - wmHeight) / 2 - 15),
         wmWidth,
         wmHeight
       );
