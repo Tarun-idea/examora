@@ -291,7 +291,7 @@ export const StudentResultsView: React.FC<StudentResultsViewProps> = ({
           </div>
 
           {/* Official White & Emerald Certificate Sheet */}
-          <div className="border-[4px] border-emerald-400 rounded-xl p-2 sm:p-3 bg-gradient-to-b from-emerald-50/90 via-white to-white relative overflow-hidden">
+          <div className="certificate-sheet border-[4px] border-emerald-400 rounded-xl p-2 sm:p-3 bg-gradient-to-b from-emerald-50/90 via-white to-white relative overflow-hidden">
             <div className="border-[2px] border-emerald-200 rounded-lg p-5 sm:p-8 relative overflow-hidden">
               {/* Centered Institutional Crest Watermark */}
               <img

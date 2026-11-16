@@ -262,3 +262,147 @@ textarea:focus {
   border-color: #A855F7 !important;
   box-shadow: 0 0 0 2px rgba(168, 85, 247, 0.25) !important;
 }
+
+/* Official Certificate Preview Sheet — Preserve Crisp Dark Ink on White Paper */
+.certificate-sheet,
+.certificate-sheet .bg-white {
+  background-color: #FFFFFF !important;
+  color: #0F172A !important;
+}
+
+.certificate-sheet .text-slate-900 {
+  color: #0F172A !important;
+}
+
+.certificate-sheet .text-slate-800 {
+  color: #1E293B !important;
+}
+
+.certificate-sheet .text-slate-700 {
+  color: #334155 !important;
+}
+
+.certificate-sheet .text-slate-600 {
+  color: #475569 !important;
+}
+
+.certificate-sheet .text-slate-500 {
+  color: #64748B !important;
+}
+
+.certificate-sheet .text-blue-950 {
+  color: #172554 !important;
+}
+
+.certificate-sheet .text-blue-800 {
+  color: #1E40AF !important;
+}
+
+.certificate-sheet .text-blue-700 {
+  color: #1D4ED8 !important;
+}
+
+.certificate-sheet .text-emerald-950 {
+  color: #022C22 !important;
+}
+
+.certificate-sheet .text-emerald-800 {
+  color: #065F46 !important;
+}
+
+.certificate-sheet .text-emerald-700 {
+  color: #047857 !important;
+}
+
+.certificate-sheet .text-amber-950 {
+  color: #451A03 !important;
+}
+
+.certificate-sheet .text-amber-800 {
+  color: #92400E !important;
+}
+
+.certificate-sheet .text-amber-700 {
+  color: #B45309 !important;
+}
+
+.certificate-sheet .text-indigo-950 {
+  color: #1E1B4B !important;
+}
+
+.certificate-sheet .text-indigo-800 {
+  color: #3730A3 !important;
+}
+
+.certificate-sheet .text-indigo-700 {
+  color: #4338CA !important;
+}
+
+.certificate-sheet .bg-blue-50 {
+  background-color: #EFF6FF !important;
+}
+
+.certificate-sheet .bg-emerald-50 {
+  background-color: #ECFDF5 !important;
+}
+
+.certificate-sheet .bg-amber-50 {
+  background-color: #FFFBEB !important;
+}
+
+.certificate-sheet .bg-indigo-50 {
+  background-color: #EEF2FF !important;
+}
+
+.certificate-sheet .border-slate-200 {
+  border-color: #E2E8F0 !important;
+}
+
+.certificate-sheet .border-blue-200 {
+  border-color: #BFDBFE !important;
+}
+
+.certificate-sheet .border-blue-300 {
+  border-color: #93C5FD !important;
+}
+
+.certificate-sheet .border-blue-700 {
+  border-color: #1D4ED8 !important;
+}
+
+.certificate-sheet .border-emerald-200 {
+  border-color: #A7F3D0 !important;
+}
+
+.certificate-sheet .border-emerald-400 {
+  border-color: #34D399 !important;
+}
+
+.certificate-sheet .border-emerald-700 {
+  border-color: #047857 !important;
+}
+
+.certificate-sheet .border-amber-200 {
+  border-color: #FDE68A !important;
+}
+
+.certificate-sheet .border-amber-300 {
+  border-color: #FCD34D !important;
+}
+
+.certificate-sheet .border-amber-700 {
+  border-color: #B45309 !important;
+}
+
+.certificate-sheet .border-indigo-200 {
+  border-color: #C7D2FE !important;
+}
+
+.certificate-sheet .border-indigo-300 {
+  border-color: #A5B4FC !important;
+}
+
+.certificate-sheet .border-indigo-700 {
+  border-color: #4338CA !important;
+}
+

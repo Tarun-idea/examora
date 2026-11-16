@@ -846,7 +846,7 @@ export const CertificateManagement: React.FC = () => {
           </div>
 
           {/* Official White & Emerald Certificate Sheet (Exact Match to Uploaded Layout) */}
-          <div className="bg-white rounded-3xl p-3 sm:p-4 shadow-2xl border border-slate-200">
+          <div className="certificate-sheet bg-white rounded-3xl p-3 sm:p-4 shadow-2xl border border-slate-200">
             <div
               className={`border-[4px] ${previewPalette.outerBorder} rounded-xl p-2 sm:p-3 bg-gradient-to-b ${previewPalette.topWash} relative overflow-hidden`}
             >
