@@ -230,11 +230,29 @@ export const CertificateManagement: React.FC = () => {
       }
     }
 
-    return Array.from(certMap.values()).filter((item) =>
-      selectedExamFilter === 'ALL'
-        ? true
-        : item.cert.examId === selectedExamFilter
-    );
+    return Array.from(certMap.values())
+      .filter((item) =>
+        selectedExamFilter === 'ALL'
+          ? true
+          : item.cert.examId === selectedExamFilter
+      )
+      .sort((a, b) => {
+        const secCmp = a.section.localeCompare(b.section, undefined, {
+          numeric: true,
+          sensitivity: 'base',
+        });
+        if (secCmp !== 0) return secCmp;
+        const nameCmp = a.cert.studentName.localeCompare(
+          b.cert.studentName,
+          undefined,
+          { sensitivity: 'base' }
+        );
+        if (nameCmp !== 0) return nameCmp;
+        return a.cert.studentRegId.localeCompare(b.cert.studentRegId, undefined, {
+          numeric: true,
+          sensitivity: 'base',
+        });
+      });
   }, [
     state.certificates,
     state.attempts,

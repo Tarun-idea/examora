@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   CheckCircle2,
   Trophy,
@@ -118,6 +118,37 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
     currentUser.bio || studentRecord?.bio || ''
   );
 
+  // Keep profile form fields synced when switching students or after remote sync
+  useEffect(() => {
+    setFullName(studentRecord?.name || currentUser.name || '');
+    setEmail(studentRecord?.email || currentUser.email || '');
+    setPhone(studentRecord?.phone || currentUser.phone || '');
+    setDateOfBirth(studentRecord?.dateOfBirth || currentUser.dateOfBirth || '');
+    setGender(studentRecord?.gender || currentUser.gender || '');
+    setDepartment(
+      studentRecord?.department ||
+        currentUser.department ||
+        'Computer Science & Engineering'
+    );
+    setYear(studentRecord?.year || currentUser.year || 'Year 3');
+    setSection(
+      normalizeSection(studentRecord?.section || currentUser.section || 'A')
+    );
+    setCgpa(studentRecord?.cgpa || currentUser.cgpa || '');
+    setAddress(studentRecord?.address || currentUser.address || '');
+    setCity(studentRecord?.city || currentUser.city || '');
+    setGuardianName(
+      studentRecord?.guardianName || currentUser.guardianName || ''
+    );
+    setGuardianPhone(
+      studentRecord?.guardianPhone || currentUser.guardianPhone || ''
+    );
+    setLinkedinUrl(studentRecord?.linkedinUrl || currentUser.linkedinUrl || '');
+    setGithubUrl(studentRecord?.githubUrl || currentUser.githubUrl || '');
+    setSkills(studentRecord?.skills || currentUser.skills || '');
+    setBio(studentRecord?.bio || currentUser.bio || '');
+  }, [currentUser.id, studentRecord?.updatedAtMs]);
+
   // Helper: strictly hide any Draft examination from Student Login
   const isDraftExam = (status?: string) =>
     String(status || '').trim().toLowerCase() === 'draft';
@@ -150,7 +181,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
   });
   const publishedAttempts = myAttempts.filter((a) => a.status === 'published');
 
-  // Ensure every passed attempt has a certificate available for this student (excluding Draft exams)
+  // Ensure every passed attempt has a certificate available for this student (excluding Draft exams and failed attempts)
   const myCertificates = state.certificates.filter((c) => {
     const belongsToStudent =
       c.studentId === currentUser.id ||
@@ -159,8 +190,14 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
     if (!belongsToStudent) return false;
     const parentExam = state.exams.find((e) => e.id === c.examId);
     if (parentExam && isDraftExam(parentExam.status)) return false;
+    const matchingAttempt = state.attempts.find((a) => a.id === c.attemptId);
+    if (matchingAttempt && !matchingAttempt.passed) return false;
     return true;
   });
+  const maxViolationsLimit = Math.max(
+    1,
+    state.settings.maxViolationsAllowed || 3
+  );
 
   const upcomingExams = assignedExams.filter(
     (e) =>
@@ -253,7 +290,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                 <strong>Escape &amp; Shortcut Keys Blocked:</strong> Keys that escape or bypass rules (<code className="font-mono">Esc</code>, <code className="font-mono">F1–F12</code>, <code className="font-mono">Alt+Tab</code>, <code className="font-mono">Ctrl+Tab</code>, <code className="font-mono">Ctrl+C/V/X/R/U/P</code>, <code className="font-mono">Meta/Win</code>) are strictly disobeyed and flagged.
               </li>
               <li>
-                <strong>3-Violation Automatic Termination:</strong> Reaching 3 logged proctoring violations automatically locks and submits your examination.
+                <strong>{maxViolationsLimit}-Violation Automatic Termination:</strong> Reaching {maxViolationsLimit} logged proctoring violations automatically locks and submits your examination.
               </li>
             </ul>
           </div>

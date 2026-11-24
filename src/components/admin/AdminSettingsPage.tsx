@@ -34,17 +34,17 @@ export const AdminSettingsPage: React.FC = () => {
     state.settings.adminEmail
   );
   const [contactPhone, setContactPhone] = useState<string>(
-    state.settings.contactPhone || '+1 (555) 234-5678'
+    state.settings.contactPhone || '+91 9025846979'
   );
   const [websiteUrl, setWebsiteUrl] = useState<string>(
-    state.settings.websiteUrl || 'https://examflow.university.edu'
+    state.settings.websiteUrl || 'https://panimalar.ac.in'
   );
   const [institutionAddress, setInstitutionAddress] = useState<string>(
     state.settings.institutionAddress ||
-      '100 University Avenue, Academic Block B, Innovation Campus'
+      'Department of AI and Data Science, Panimalar Engineering College, Chennai'
   );
   const [timezone, setTimezone] = useState<string>(
-    state.settings.timezone || 'UTC-05:00 (Eastern Time)'
+    state.settings.timezone || 'UTC+05:30 (Indian Standard Time)'
   );
   const [collegeLogoUrl, setCollegeLogoUrl] = useState<string>(
     state.settings.collegeLogoUrl || ''
@@ -98,12 +98,17 @@ export const AdminSettingsPage: React.FC = () => {
     );
   };
 
-  const handleChangeAdminPassword = (e: React.FormEvent) => {
+  const handleChangeAdminPassword = async (e: React.FormEvent) => {
     e.preventDefault();
     setPasswordError(null);
     setPasswordSuccess(null);
 
-    const res = examStore.changeAdminPassword(
+    if (newPassword.trim().length < 8) {
+      setPasswordError('New administrator password must be at least 8 characters long.');
+      return;
+    }
+
+    const res = await examStore.changeAdminPasswordAsync(
       currentPassword.trim(),
       newPassword.trim(),
       confirmPassword.trim()
@@ -117,7 +122,7 @@ export const AdminSettingsPage: React.FC = () => {
     setNewPassword('');
     setConfirmPassword('');
     setPasswordSuccess(
-      'Administrator password updated successfully and synced permanently across all devices!'
+      'Administrator password updated and hashed securely on the server!'
     );
   };
 
@@ -335,9 +340,12 @@ export const AdminSettingsPage: React.FC = () => {
               type="email"
               value={adminEmail}
               onChange={(e) => setAdminEmail(e.target.value)}
-              placeholder="admin@university.edu"
+              placeholder="tarunkumarv2008@gmail.com"
               className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-xs text-slate-900 focus:outline-none focus:border-blue-600"
             />
+            <p className="text-[11px] text-slate-500 mt-1">
+              This email is also authorized for Administrator login and Forgot Password OTP email delivery.
+            </p>
           </div>
 
           <div>
@@ -353,7 +361,7 @@ export const AdminSettingsPage: React.FC = () => {
               type="text"
               value={contactPhone}
               onChange={(e) => setContactPhone(e.target.value)}
-              placeholder="+1 (555) 234-5678"
+              placeholder="+91 9025846979"
               className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-xs text-slate-900 focus:outline-none focus:border-blue-600"
             />
           </div>
@@ -371,7 +379,7 @@ export const AdminSettingsPage: React.FC = () => {
               type="text"
               value={websiteUrl}
               onChange={(e) => setWebsiteUrl(e.target.value)}
-              placeholder="https://examflow.university.edu"
+              placeholder="https://panimalar.ac.in"
               className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-xs text-slate-900 focus:outline-none focus:border-blue-600"
             />
           </div>
@@ -478,7 +486,7 @@ export const AdminSettingsPage: React.FC = () => {
               type="password"
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
-              placeholder="New password (min 6 chars)"
+              placeholder="New password (min 8 chars)"
               className="w-full px-4 py-2.5 rounded-xl border border-slate-200 text-xs text-slate-900 focus:outline-none focus:border-blue-600"
             />
           </div>

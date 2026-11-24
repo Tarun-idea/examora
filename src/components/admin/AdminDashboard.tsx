@@ -71,16 +71,32 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       ? Math.round((publishedAttemptsCount / totalAttempts) * 100)
       : 0;
 
-  // Compute live performance points from attempts (or flat baseline at 0% when no attempts exist yet)
-  const recentAttempts = [...state.attempts].slice(0, 6).reverse();
-  const chartValues =
-    recentAttempts.length > 0
-      ? Array.from({ length: 6 }, (_, i) => {
-          const item =
-            recentAttempts[Math.min(i, recentAttempts.length - 1)];
-          return item ? item.percentage : 0;
-        })
-      : [0, 0, 0, 0, 0, 0];
+  // Compute live performance points from attempts (respecting timeframe selection)
+  const orderedAttempts = [...state.attempts].reverse();
+  const chartValues = (() => {
+    if (orderedAttempts.length === 0) return [0, 0, 0, 0, 0, 0];
+    if (timeframe === '6m') {
+      const recent = orderedAttempts.slice(-6);
+      return Array.from({ length: 6 }, (_, i) => {
+        const item = recent[Math.min(i, recent.length - 1)];
+        return item ? item.percentage : 0;
+      });
+    }
+    // Full Academic Year: average across 6 chronological buckets of all recorded attempts
+    return Array.from({ length: 6 }, (_, bucketIdx) => {
+      const start = Math.floor((bucketIdx * orderedAttempts.length) / 6);
+      const end = Math.max(
+        start + 1,
+        Math.floor(((bucketIdx + 1) * orderedAttempts.length) / 6)
+      );
+      const slice = orderedAttempts.slice(start, Math.min(end, orderedAttempts.length));
+      if (slice.length === 0) {
+        return orderedAttempts[orderedAttempts.length - 1]?.percentage ?? 0;
+      }
+      const sum = slice.reduce((acc, item) => acc + item.percentage, 0);
+      return Math.round(sum / slice.length);
+    });
+  })();
   const chartX = [20, 110, 205, 300, 395, 485];
   const chartY = chartValues.map((pct) =>
     Math.round(125 - (Math.max(0, Math.min(100, pct)) / 100) * 95)
@@ -393,8 +409,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               onChange={(e) => setTimeframe(e.target.value as '6m' | '1y')}
               className="text-xs font-semibold text-slate-200 bg-[#151946] border border-purple-500/35 rounded-xl px-3 py-1.5 focus:outline-none"
             >
-              <option value="6m">Live Submissions</option>
-              <option value="1y">Full Academic Year</option>
+              <option value="6m" className="bg-[#0E1132] text-white">
+                Live Submissions
+              </option>
+              <option value="1y" className="bg-[#0E1132] text-white">
+                Full Academic Year
+              </option>
             </select>
           </div>
 
@@ -432,10 +452,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               ))}
             </svg>
             <div className="flex justify-between text-[11px] text-slate-400 font-mono mt-1 px-2">
-              {recentAttempts.length > 0 ? (
+              {orderedAttempts.length > 0 ? (
                 chartValues.map((val, idx) => (
                   <span key={idx}>
-                    #{idx + 1} ({val}%)
+                    {timeframe === '1y' ? `P${idx + 1}` : `#${idx + 1}`} ({val}%)
                   </span>
                 ))
               ) : (

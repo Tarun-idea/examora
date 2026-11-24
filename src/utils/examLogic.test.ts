@@ -14,6 +14,8 @@ import {
   createHardCProgramsDrafts,
   createMediumCProgramsDrafts,
   formatQuestionPromptForDisplay,
+  isCleanReadableText,
+  sanitizeExtractedText,
   parseQuestionsFromText,
   parseQuestionsFromCsv,
 } from './questionPaperParser.ts';
@@ -843,6 +845,266 @@ int main() {
   assert.equal(parsedFromCsv[0].correctOpt, 'opt-a');
   assert.ok(parsedFromCsv[0].text.includes('#include <stdio.h>\nint main() {'));
 });
+
+test('sortStudentsBySectionAndName and mergeSharedPlatformState automatically place students in Section-wise (A→L) and Name-wise (A→Z) order by default', async () => {
+  const { sortStudentsBySectionAndName, mergeSharedPlatformState } = await import(
+    '../services/examStore.ts'
+  );
+
+  const unsorted = [
+    { id: 's1', studentId: '2025C02', name: 'Zara Khan', section: 'C' },
+    { id: 's2', studentId: '2025A03', name: 'Meera Nair', section: 'A' },
+    { id: 's3', studentId: '2025B01', name: 'Karthik Raj', section: 'B' },
+    { id: 's4', studentId: '2025A01', name: 'Arun Kumar', section: 'Section A' },
+    { id: 's5', studentId: '2025A02', name: 'Arun Kumar', section: 'a' },
+    { id: 's6', studentId: '2025C01', name: 'Bala Murugan', section: 'C' },
+    { id: 's7', studentId: '2025B02', name: 'Ananya Sharma', section: 'B' },
+  ];
+
+  const sorted = sortStudentsBySectionAndName(unsorted);
+  assert.deepEqual(
+    sorted.map((s) => `${s.studentId}:${s.name}`),
+    [
+      '2025A01:Arun Kumar',
+      '2025A02:Arun Kumar',
+      '2025A03:Meera Nair',
+      '2025B02:Ananya Sharma',
+      '2025B01:Karthik Raj',
+      '2025C01:Bala Murugan',
+      '2025C02:Zara Khan',
+    ]
+  );
+
+  // Verify mergeSharedPlatformState automatically places a newly added student into their exact Section + Name slot
+  const merged = mergeSharedPlatformState(
+    {
+      students: [
+        {
+          id: 'stu-c1',
+          studentId: '2025C10',
+          name: 'Vikram',
+          email: 'vikram@student.edu',
+          department: 'CSE',
+          year: 'Year 1',
+          section: 'C',
+          status: 'Active',
+          createdAt: '2026-11-10',
+          updatedAtMs: 1000,
+        },
+        {
+          id: 'stu-a2',
+          studentId: '2025A20',
+          name: 'Divya',
+          email: 'divya@student.edu',
+          department: 'CSE',
+          year: 'Year 1',
+          section: 'A',
+          status: 'Active',
+          createdAt: '2026-11-10',
+          updatedAtMs: 1000,
+        },
+      ],
+    },
+    {
+      students: [
+        {
+          id: 'stu-a1',
+          studentId: '2025A05',
+          name: 'Aarav',
+          email: 'aarav@student.edu',
+          department: 'CSE',
+          year: 'Year 1',
+          section: 'A',
+          status: 'Active',
+          createdAt: '2026-11-11',
+          updatedAtMs: 2000,
+        },
+        {
+          id: 'stu-b1',
+          studentId: '2025B01',
+          name: 'Bhavna',
+          email: 'bhavna@student.edu',
+          department: 'CSE',
+          year: 'Year 1',
+          section: 'B',
+          status: 'Active',
+          createdAt: '2026-11-11',
+          updatedAtMs: 2000,
+        },
+      ],
+    }
+  );
+
+  assert.deepEqual(
+    merged.students.map((s) => `${s.section}:${s.name}`),
+    ['A:Aarav', 'A:Divya', 'B:Bhavna', 'C:Vikram']
+  );
+});
+
+test('isCleanReadableText and sanitizeExtractedText preserve standalone code braces and symbol lines while rejecting binary mojibake', () => {
+  assert.equal(isCleanReadableText('{'), true);
+  assert.equal(isCleanReadableText('}'), true);
+  assert.equal(isCleanReadableText('};'), true);
+  assert.equal(isCleanReadableText('* * *'), true);
+  assert.equal(isCleanReadableText('\u0000\u0001\u00FF\u00FE\uFFFD'), false);
+
+  const rawCodeMcq = [
+    'Q1. [MCQ] [5 Marks] What is the output of this C program?',
+    '#include <stdio.h>',
+    'int main()',
+    '{',
+    '    printf("* * *\\n");',
+    '    return 0;',
+    '}',
+    'A) * * *',
+    'B) Error',
+    'C) Nothing',
+    'D) 0',
+    'Answer: A',
+  ].join('\n');
+
+  const sanitized = sanitizeExtractedText(rawCodeMcq);
+  assert.ok(sanitized.includes('\n{\n'));
+  assert.ok(sanitized.includes('\n}\n'));
+
+  const parsed = parseQuestionsFromText(sanitized);
+  assert.equal(parsed.length, 1);
+  assert.ok(parsed[0].text.includes('{'));
+  assert.ok(parsed[0].text.includes('}'));
+  assert.equal(parsed[0].optA, '* * *');
+});
+
+test('ServerAdminAuthService enforces scrypt hashing, dynamic Admin Settings email, Bearer sessions, and zero-leak OTP reset', async () => {
+  const fs = await import('fs');
+  const os = await import('os');
+  const path = await import('path');
+  const { ServerAdminAuthService } = await import('../../serverAuth.ts');
+
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'examflow-auth-test-'));
+  const prevEnvPass = process.env.ADMIN_INITIAL_PASSWORD;
+  const prevSmtpUser = process.env.SMTP_USER;
+  const prevSmtpPass = process.env.SMTP_PASS;
+
+  try {
+    delete process.env.ADMIN_INITIAL_PASSWORD;
+    delete process.env.SMTP_USER;
+    delete process.env.SMTP_PASS;
+
+    const auth = new ServerAdminAuthService(tmpDir);
+
+    // 1. Fresh instance requires one-time initial password setup
+    assert.equal(auth.needsInitialSetup(), true);
+    const shortPass = auth.setupInitialPassword('tarunkumarv2008@gmail.com', 'short', 'short');
+    assert.equal(shortPass.ok, false);
+
+    const setup = auth.setupInitialPassword('tarunkumarv2008@gmail.com', 'StrongInit#2026', 'StrongInit#2026');
+    assert.equal(setup.ok, true);
+    assert.ok(setup.token && setup.token.length === 64);
+    assert.equal(auth.needsInitialSetup(), false);
+
+    // Second setup attempt must be permanently blocked
+    const secondSetup = auth.setupInitialPassword('attacker@evil.com', 'HackedPass99', 'HackedPass99');
+    assert.equal(secondSetup.ok, false);
+
+    // Stored file must NEVER contain plaintext password
+    const savedRaw = fs.readFileSync(path.join(tmpDir, 'examflow_admin_auth.json'), 'utf8');
+    assert.equal(savedRaw.includes('StrongInit#2026'), false);
+
+    // 2. Login rejects wrong password & unauthorized email, accepts owner email and dynamic Admin Settings email
+    assert.equal(auth.loginAdmin('admin', 'admin123', '127.0.0.1').ok, false);
+    assert.equal(auth.loginAdmin('random@evil.com', 'StrongInit#2026', '127.0.0.1').ok, false);
+
+    const loginOk = auth.loginAdmin('tarunkumarv2008@gmail.com', 'StrongInit#2026', '127.0.0.1');
+    assert.equal(loginOk.ok, true);
+    assert.ok(loginOk.token);
+
+    // Updating Admin Settings email dynamically authorizes the new email alongside owner email
+    auth.syncRecoveryEmail('principal.exam@college.edu');
+    const customEmailLogin = auth.loginAdmin(
+      'principal.exam@college.edu',
+      'StrongInit#2026',
+      '127.0.0.1',
+      'principal.exam@college.edu'
+    );
+    assert.equal(customEmailLogin.ok, true);
+    assert.ok(auth.verifyBearerHeader(`Bearer ${customEmailLogin.token}`));
+    assert.equal(auth.verifyBearerHeader('Bearer invalid-token'), null);
+
+    // 3. Unrequested OTP must be rejected
+    const unrequested = auth.verifyOtpAndResetPassword('123456', 'NewSecret#99', 'NewSecret#99');
+    assert.equal(unrequested.ok, false);
+
+    // Unauthorized email must be rejected by SMTP OTP request (even when SMTP env vars are set)
+    process.env.SMTP_USER = 'sender@example.com';
+    process.env.SMTP_PASS = 'app-password';
+    const unauthorizedOtp = await auth.requestOtpViaSmtp('hacker@evil.com', 'principal.exam@college.edu');
+    assert.equal(unauthorizedOtp.ok, false);
+    assert.equal(unauthorizedOtp.statusCode, 403);
+
+    // 4. Issued OTP rejects wrong code, accepts exact code, updates password, is one-time use, and revokes old sessions
+    const otpCode = auth._issueTestOtpForUnitTests('principal.exam@college.edu');
+    assert.match(otpCode, /^\d{6}$/);
+
+    const wrongOtp = auth.verifyOtpAndResetPassword(
+      otpCode === '000000' ? '111111' : '000000',
+      'ResetSecret#2026',
+      'ResetSecret#2026'
+    );
+    assert.equal(wrongOtp.ok, false);
+
+    const validReset = auth.verifyOtpAndResetPassword(
+      otpCode,
+      'ResetSecret#2026',
+      'ResetSecret#2026',
+      'principal.exam@college.edu'
+    );
+    assert.equal(validReset.ok, true);
+
+    // Old sessions must be revoked immediately after password reset
+    assert.equal(auth.verifyBearerHeader(`Bearer ${loginOk.token}`), null);
+    assert.equal(auth.verifyBearerHeader(`Bearer ${customEmailLogin.token}`), null);
+
+    // OTP cannot be reused
+    const reuseOtp = auth.verifyOtpAndResetPassword(otpCode, 'AnotherPass#1', 'AnotherPass#1');
+    assert.equal(reuseOtp.ok, false);
+
+    // Old password rejected, new password accepted
+    assert.equal(auth.loginAdmin('admin', 'StrongInit#2026', '127.0.0.1').ok, false);
+    const postResetLogin = auth.loginAdmin(
+      'principal.exam@college.edu',
+      'ResetSecret#2026',
+      '127.0.0.1',
+      'principal.exam@college.edu'
+    );
+    assert.equal(postResetLogin.ok, true);
+
+    // 5. Authenticated password change rotates session tokens
+    const unauthChange = auth.changePasswordAuthenticated(undefined, 'ResetSecret#2026', 'Rotated#2026', 'Rotated#2026');
+    assert.equal(unauthChange.ok, false);
+    assert.equal(unauthChange.statusCode, 401);
+
+    const authChange = auth.changePasswordAuthenticated(
+      `Bearer ${postResetLogin.token}`,
+      'ResetSecret#2026',
+      'Rotated#2026',
+      'Rotated#2026',
+      'principal.exam@college.edu'
+    );
+    assert.equal(authChange.ok, true);
+    assert.ok(authChange.token && authChange.token !== postResetLogin.token);
+    assert.equal(auth.verifyBearerHeader(`Bearer ${postResetLogin.token}`), null);
+    assert.ok(auth.verifyBearerHeader(`Bearer ${authChange.token}`));
+  } finally {
+    if (prevEnvPass === undefined) delete process.env.ADMIN_INITIAL_PASSWORD;
+    else process.env.ADMIN_INITIAL_PASSWORD = prevEnvPass;
+    if (prevSmtpUser === undefined) delete process.env.SMTP_USER;
+    else process.env.SMTP_USER = prevSmtpUser;
+    if (prevSmtpPass === undefined) delete process.env.SMTP_PASS;
+    else process.env.SMTP_PASS = prevSmtpPass;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 
 
 

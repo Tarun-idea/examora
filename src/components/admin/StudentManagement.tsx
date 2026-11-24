@@ -14,6 +14,7 @@ import {
   StudentRecord,
   ALL_SECTIONS,
   normalizeSection,
+  sortStudentsBySectionAndName,
 } from '../../services/examStore.ts';
 
 export const StudentManagement: React.FC = () => {
@@ -117,15 +118,57 @@ export const StudentManagement: React.FC = () => {
     setStudentPassword('123');
   };
 
+  const parseCsvRow = (line: string): string[] => {
+    const cells: string[] = [];
+    let current = '';
+    let inQuotes = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') {
+        if (inQuotes && line[i + 1] === '"') {
+          current += '"';
+          i++;
+        } else {
+          inQuotes = !inQuotes;
+        }
+      } else if (ch === ',' && !inQuotes) {
+        cells.push(current.trim());
+        current = '';
+      } else {
+        current += ch;
+      }
+    }
+    cells.push(current.trim());
+    return cells;
+  };
+
   const handleBulkCsvImport = (e: React.FormEvent) => {
     e.preventDefault();
     const lines = csvText
-      .split('\n')
+      .split(/\r?\n/)
       .map((l) => l.trim())
       .filter(Boolean);
-    const parsed = lines.map((line) => {
-      const parts = line.split(',').map((p) => p.trim());
-      return {
+
+    const parsed = lines
+      .map((line) => parseCsvRow(line))
+      .filter((parts, index) => {
+        if (parts.length === 0) return false;
+        const firstCell = (parts[0] || '').toLowerCase();
+        const secondCell = (parts[1] || '').toLowerCase();
+        if (
+          index === 0 &&
+          (firstCell.includes('student id') ||
+            firstCell === 'id' ||
+            firstCell.includes('reg') ||
+            firstCell.includes('roll') ||
+            secondCell.includes('full name') ||
+            secondCell === 'name')
+        ) {
+          return false;
+        }
+        return Boolean(parts[0] || parts[1]);
+      })
+      .map((parts) => ({
         studentId:
           parts[0] || `STU-2026-${Math.floor(100 + Math.random() * 900)}`,
         name: parts[1] || 'Imported Student',
@@ -133,20 +176,55 @@ export const StudentManagement: React.FC = () => {
         department: parts[3] || 'Computer Science & Engineering',
         year: parts[4] || 'Year 3',
         section: normalizeSection(parts[5] || 'A'),
-      };
-    });
+      }));
+
     const count = examStore.bulkImportStudents(parsed);
     setShowCsvModal(false);
-    setBannerMsg(`Successfully imported ${count} student account(s) from CSV.`);
+    setBannerMsg(
+      count > 0
+        ? `Successfully imported ${count} student account(s) from CSV in Section-wise order.`
+        : 'No new students were imported (all listed Student IDs already exist or input was empty).'
+    );
   };
+
+  const seenStudentKeys = new Set<string>();
+  const filteredStudents = sortStudentsBySectionAndName(
+    state.students.filter((stu) => {
+      const key = `${stu.id}::${stu.studentId.trim().toUpperCase()}`;
+      if (seenStudentKeys.has(stu.id) || seenStudentKeys.has(key)) return false;
+      const matchesDept = deptFilter === 'ALL' || stu.department === deptFilter;
+      const q = search.trim().toLowerCase();
+      const matchesSearch =
+        !q ||
+        stu.name.toLowerCase().includes(q) ||
+        stu.studentId.toLowerCase().includes(q) ||
+        stu.email.toLowerCase().includes(q);
+      if (matchesDept && matchesSearch) {
+        seenStudentKeys.add(stu.id);
+        seenStudentKeys.add(key);
+        return true;
+      }
+      return false;
+    })
+  );
+
+  // Precompute student counts per section for section list divider headers
+  const sectionCounts = filteredStudents.reduce<Record<string, number>>(
+    (acc, stu) => {
+      const sec = normalizeSection(stu.section || 'A');
+      acc[sec] = (acc[sec] || 0) + 1;
+      return acc;
+    },
+    {}
+  );
 
   const handleExportCsv = () => {
     const header =
       'Student ID,Full Name,Email,Department,Year,Section,Status\n';
-    const rows = state.students
+    const rows = filteredStudents
       .map(
         (s) =>
-          `"${s.studentId}","${s.name}","${s.email}","${s.department}","${s.year}","${s.section}","${s.status}"`
+          `"${s.studentId}","${s.name}","${s.email}","${s.department}","${s.year}","${normalizeSection(s.section || 'A')}","${s.status}"`
       )
       .join('\n');
     const blob = new Blob([header + rows], { type: 'text/csv;charset=utf-8;' });
@@ -157,25 +235,6 @@ export const StudentManagement: React.FC = () => {
     a.click();
     URL.revokeObjectURL(url);
   };
-
-  const seenStudentKeys = new Set<string>();
-  const filteredStudents = state.students.filter((stu) => {
-    const key = `${stu.id}::${stu.studentId.trim().toUpperCase()}`;
-    if (seenStudentKeys.has(stu.id) || seenStudentKeys.has(key)) return false;
-    const matchesDept = deptFilter === 'ALL' || stu.department === deptFilter;
-    const q = search.trim().toLowerCase();
-    const matchesSearch =
-      !q ||
-      stu.name.toLowerCase().includes(q) ||
-      stu.studentId.toLowerCase().includes(q) ||
-      stu.email.toLowerCase().includes(q);
-    if (matchesDept && matchesSearch) {
-      seenStudentKeys.add(stu.id);
-      seenStudentKeys.add(key);
-      return true;
-    }
-    return false;
-  });
 
   return (
     <div className="space-y-6 max-w-[1480px] w-full mx-auto">
@@ -266,9 +325,11 @@ export const StudentManagement: React.FC = () => {
             onChange={(e) => setDeptFilter(e.target.value)}
             className="px-3.5 py-2 rounded-xl border border-purple-500/35 bg-[#141946] text-xs font-semibold text-white focus:outline-none"
           >
-            <option value="ALL">All Departments</option>
+            <option value="ALL" className="bg-[#0E1132] text-white">
+              All Departments
+            </option>
             {departments.map((d) => (
-              <option key={d} value={d}>
+              <option key={d} value={d} className="bg-[#0E1132] text-white">
                 {d}
               </option>
             ))}
@@ -276,7 +337,7 @@ export const StudentManagement: React.FC = () => {
         </div>
       </div>
 
-      {/* Students Table */}
+      {/* Students Table (Automatically Sorted Section-Wise A→L, Name-Wise A→Z) */}
       <div className="bg-[#0E1132] rounded-2xl border border-purple-500/30 shadow-lg overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse">
@@ -293,11 +354,32 @@ export const StudentManagement: React.FC = () => {
             </thead>
             <tbody className="divide-y divide-purple-500/15 text-xs">
               {filteredStudents.length > 0 ? (
-                filteredStudents.map((stu) => (
-                  <tr
-                    key={stu.id}
-                    className="hover:bg-purple-500/10 transition-colors"
-                  >
+                filteredStudents.map((stu, idx) => {
+                  const sec = normalizeSection(stu.section || 'A');
+                  const prevSec =
+                    idx > 0
+                      ? normalizeSection(filteredStudents[idx - 1].section || 'A')
+                      : null;
+                  const showSectionDivider = sec !== prevSec;
+                  return (
+                    <React.Fragment key={stu.id}>
+                      {showSectionDivider && (
+                        <tr className="bg-[#121740] border-y border-purple-500/25">
+                          <td
+                            colSpan={7}
+                            className="py-2.5 px-5 text-[11px] font-extrabold tracking-wide text-purple-200"
+                          >
+                            Section {sec}
+                            <span className="text-slate-400 font-normal ml-2 font-mono tabular-nums">
+                              · {sectionCounts[sec] || 0}{' '}
+                              {(sectionCounts[sec] || 0) === 1
+                                ? 'Student'
+                                : 'Students'}
+                            </span>
+                          </td>
+                        </tr>
+                      )}
+                      <tr className="hover:bg-purple-500/10 transition-colors">
                     <td className="py-4 px-5 font-mono font-extrabold text-cyan-300">
                       {stu.studentId}
                     </td>
@@ -365,8 +447,10 @@ export const StudentManagement: React.FC = () => {
                         </button>
                       </div>
                     </td>
-                  </tr>
-                ))
+                      </tr>
+                    </React.Fragment>
+                  );
+                })
               ) : (
                 <tr>
                   <td

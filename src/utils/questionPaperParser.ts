@@ -85,6 +85,7 @@ export function isCleanReadableText(str?: string): boolean {
 
   let badChars = 0;
   let asciiAlphaNum = 0;
+  let printableAscii = 0;
 
   for (let i = 0; i < trimmed.length; i++) {
     const code = trimmed.charCodeAt(i);
@@ -94,6 +95,9 @@ export function isCleanReadableText(str?: string): boolean {
       (code >= 48 && code <= 57)
     ) {
       asciiAlphaNum++;
+      printableAscii++;
+    } else if (code >= 32 && code <= 126) {
+      printableAscii++;
     } else if (code < 32 && code !== 9 && code !== 10 && code !== 13) {
       badChars += 2;
     } else if (code >= 127 && code <= 255) {
@@ -103,7 +107,10 @@ export function isCleanReadableText(str?: string): boolean {
     }
   }
 
-  if (asciiAlphaNum === 0) return false;
+  if (asciiAlphaNum === 0) {
+    // Preserve standalone code/symbol lines such as `{`, `}`, `};`, `()`, `* * *`, `---`
+    return badChars === 0 && printableAscii > 0;
+  }
   return badChars / trimmed.length <= 0.12;
 }
 

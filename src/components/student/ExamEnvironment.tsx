@@ -34,8 +34,6 @@ interface ExamEnvironmentProps {
   onViewResults: (attemptId: string) => void;
 }
 
-const MAX_ALLOWED_VIOLATIONS = 3;
-
 export const ExamEnvironment: React.FC<ExamEnvironmentProps> = ({
   examId,
   studentId,
@@ -47,6 +45,10 @@ export const ExamEnvironment: React.FC<ExamEnvironmentProps> = ({
   );
   const state = examStore.getState();
   const exam = state.exams.find((e) => e.id === examId);
+  const MAX_ALLOWED_VIOLATIONS = Math.max(
+    1,
+    state.settings.maxViolationsAllowed || 3
+  );
 
   const [currentIndex, setCurrentIndex] = useState<number>(0);
   const [warningBanner, setWarningBanner] = useState<string | null>(null);
@@ -190,6 +192,7 @@ export const ExamEnvironment: React.FC<ExamEnvironmentProps> = ({
       lockdownViolationModal,
       showSubmitModal,
       handleFinalSubmit,
+      MAX_ALLOWED_VIOLATIONS,
     ]
   );
 
@@ -1162,7 +1165,7 @@ export const ExamEnvironment: React.FC<ExamEnvironmentProps> = ({
               <li className="flex items-start gap-2">
                 <AlertTriangle className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
                 <span>
-                  <strong className="text-amber-300">3-Strike Auto-Submit:</strong> Reaching {MAX_ALLOWED_VIOLATIONS} violations terminates the exam automatically.
+                  <strong className="text-amber-300">{MAX_ALLOWED_VIOLATIONS}-Strike Auto-Submit:</strong> Reaching {MAX_ALLOWED_VIOLATIONS} violations terminates the exam automatically.
                 </span>
               </li>
             </ul>

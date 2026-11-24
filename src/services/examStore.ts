@@ -25,6 +25,39 @@ export function normalizeSection(sec?: string): string {
   return ALL_SECTIONS.includes(firstChar) ? firstChar : 'A';
 }
 
+/**
+ * Default automatic student roster ordering:
+ * 1. Section wise (Section A → Section L)
+ * 2. Name wise (A → Z) within each section
+ * 3. Student ID (natural alphanumeric) as tie-breaker
+ */
+export function sortStudentsBySectionAndName<
+  T extends { section?: string; name?: string; studentId?: string }
+>(students: T[]): T[] {
+  return [...students].sort((a, b) => {
+    const secA = normalizeSection(a.section || 'A');
+    const secB = normalizeSection(b.section || 'A');
+    const secCmp = secA.localeCompare(secB, undefined, {
+      numeric: true,
+      sensitivity: 'base',
+    });
+    if (secCmp !== 0) return secCmp;
+
+    const nameCmp = (a.name || '')
+      .trim()
+      .localeCompare((b.name || '').trim(), undefined, {
+        numeric: true,
+        sensitivity: 'base',
+      });
+    if (nameCmp !== 0) return nameCmp;
+
+    return (a.studentId || '').localeCompare(b.studentId || '', undefined, {
+      numeric: true,
+      sensitivity: 'base',
+    });
+  });
+}
+
 export interface UserProfile {
   id: string;
   name: string;
@@ -529,17 +562,19 @@ export function mergeSharedPlatformState(
   unmarkIfNewer(current.questions);
   unmarkIfNewer(incoming.questions);
 
-  const students = mergeArrayById<StudentRecord>(
-    current.students || [],
-    incoming.students || [],
-    deletedSet,
-    true,
-    false
-  ).map((stu) => ({
-    ...stu,
-    studentId: stu.studentId.trim().toUpperCase(),
-    section: normalizeSection(stu.section),
-  }));
+  const students = sortStudentsBySectionAndName(
+    mergeArrayById<StudentRecord>(
+      current.students || [],
+      incoming.students || [],
+      deletedSet,
+      true,
+      false
+    ).map((stu) => ({
+      ...stu,
+      studentId: stu.studentId.trim().toUpperCase(),
+      section: normalizeSection(stu.section),
+    }))
+  );
 
   const subjects = mergeArrayById<Subject>(
     current.subjects || [],
@@ -711,7 +746,7 @@ export function mergeSharedPlatformState(
 
   const currentSettingsTime = Number(current.settingsUpdatedAt || 0);
   const incomingSettingsTime = Number(incoming.settingsUpdatedAt || 0);
-  const settings: PlatformSettings =
+  const rawSettings: PlatformSettings =
     incomingSettingsTime > currentSettingsTime || currentSettingsTime === 0
       ? {
           ...seed.settings,
@@ -723,6 +758,8 @@ export function mergeSharedPlatformState(
           ...(incoming.settings || {}),
           ...(current.settings || {}),
         };
+  // Never store or expose plaintext admin passwords in shared state
+  const { adminPassword: _strippedPassword, ...settings } = rawSettings;
 
   const currentTemplateTime = Number(current.templateUpdatedAt || 0);
   const incomingTemplateTime = Number(incoming.templateUpdatedAt || 0);
@@ -804,12 +841,12 @@ function createInitialSeedState(): ExamStoreState {
       presentationLine: 'This is to officially certify that',
       bodyTextTemplate:
         'has successfully passed the proctored assessment with verified distinction and demonstrated mastery of the curriculum.',
-      signatoryLeftName: 'Dr. Sarah Jenkins',
-      signatoryLeftTitle: 'Chief Examination Controller',
-      signatoryCenterName: 'Mrs. C. Annapoorani',
-      signatoryCenterTitle: 'Faculty Mentor, Dept. of AI & DS',
-      signatoryRightName: 'Prof. Richard Vance',
-      signatoryRightTitle: 'Dean of Academic Affairs',
+      signatoryLeftName: 'Mrs. C. Annapoorani',
+      signatoryLeftTitle: 'Faculty Mentor, Dept. of AI & DS',
+      signatoryCenterName: 'Dr. S. Prasanna Devi',
+      signatoryCenterTitle: 'Chief Examination Controller',
+      signatoryRightName: 'Head of Department',
+      signatoryRightTitle: 'Dept. of Artificial Intelligence & Data Science',
       sealText: 'VERIFIED MERIT SEAL',
       accentTheme: 'emerald',
     },
@@ -818,8 +855,7 @@ function createInitialSeedState(): ExamStoreState {
       institutionName: 'Panimalar Engineering College',
       academicSession: '2025 - 2026 Academic Year',
       adminName: 'Administrator',
-      adminEmail: 'taruntk2008@gmail.com',
-      adminPassword: 'admin123',
+      adminEmail: 'tarunkumarv2008@gmail.com',
       contactPhone: '+91 9025846979',
       websiteUrl: 'https://panimalar.ac.in',
       institutionAddress:
@@ -830,7 +866,7 @@ function createInitialSeedState(): ExamStoreState {
       collegeLogoUrl: '/assets/panimalar-crest.png',
       enforceFullscreen: true,
       autoSubmitOnMaxViolations: true,
-      maxViolationsAllowed: 5,
+      maxViolationsAllowed: 3,
       webcamProctoringDefault: true,
       defaultPassingPercentage: 50,
       lateJoinRemainingTimeOnly: true,
@@ -850,6 +886,8 @@ class ExamStore {
   private syncTimer: ReturnType<typeof setInterval> | null = null;
   private unsubFirestore: (() => void) | null = null;
   private lastIssuedTs = 0;
+  // Server-verified Admin Bearer token held strictly in memory (never in localStorage or sessionStorage)
+  private adminSessionToken: string | null = null;
 
   constructor() {
     this.state = this.loadFromStorage();
@@ -895,7 +933,11 @@ class ExamStore {
 
   private getSharedPayload(): Omit<ExamStoreState, 'isAuthenticated' | 'currentUser'> {
     const { isAuthenticated: _auth, currentUser: _user, ...shared } = this.state;
-    return shared;
+    const { adminPassword: _removedPass, ...safeSettings } = shared.settings;
+    return {
+      ...shared,
+      settings: safeSettings,
+    };
   }
 
   private initCrossDeviceSync() {
@@ -1101,16 +1143,31 @@ class ExamStore {
     const shared = this.getSharedPayload();
     try {
       if (role === 'admin') {
-        const [, apiRes] = await Promise.all([
-          pushFirestoreSyncState(shared).catch(() => false),
-          fetch('/api/state/sync', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ state: shared, role: 'admin' }),
-          })
-            .then((r) => (r.ok ? r.json() : null))
-            .catch(() => null),
-        ]);
+        if (!this.adminSessionToken) {
+          return;
+        }
+        const apiRaw = await fetch('/api/state/sync', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${this.adminSessionToken}`,
+          },
+          body: JSON.stringify({ state: shared, role: 'admin' }),
+        }).catch(() => null);
+
+        if (apiRaw && apiRaw.status === 401) {
+          // Server rejected expired or unauthorized Admin token — clear session cleanly
+          this.adminSessionToken = null;
+          this.state.isAuthenticated = false;
+          this.saveToStorage();
+          for (const listener of this.listeners) {
+            listener();
+          }
+          return;
+        }
+
+        const apiRes = apiRaw && apiRaw.ok ? await apiRaw.json().catch(() => null) : null;
+        void pushFirestoreSyncState(shared).catch(() => false);
         if (apiRes?.state && typeof apiRes.state === 'object') {
           this.applyRemoteState(apiRes.state);
         }
@@ -1218,9 +1275,14 @@ class ExamStore {
             sessionUser.section = normalizeSection(sessionUser.section);
           }
 
+          // Admin sessions require a fresh server-verified Bearer token in memory;
+          // never auto-authenticate Admin role from browser localStorage.
+          const safeSessionAuth =
+            sessionUser.role === 'admin' ? false : sessionAuth;
+
           return {
             ...mergedShared,
-            isAuthenticated: sessionAuth,
+            isAuthenticated: safeSessionAuth,
             currentUser: sessionUser,
           };
         }
@@ -1306,21 +1368,134 @@ class ExamStore {
   }
 
   // =========================================================
-  // AUTHENTICATION & ROLE SWITCHING (WITH CROSS-DEVICE CLOUD SYNC)
+  // AUTHENTICATION & ROLE SWITCHING (WITH SERVER-VERIFIED ADMIN AUTH)
   // =========================================================
+  public async fetchAdminAuthStatus(): Promise<{
+    needsInitialSetup: boolean;
+    smtpConfigured: boolean;
+    maskedRecoveryEmail: string;
+    cooldownSecondsRemaining: number;
+  }> {
+    try {
+      const res = await fetch('/api/auth/admin/status', {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        cache: 'no-store',
+      });
+      if (res.ok) {
+        return await res.json();
+      }
+    } catch {
+      // ignore network error
+    }
+    return {
+      needsInitialSetup: false,
+      smtpConfigured: false,
+      maskedRecoveryEmail: 'ta***@gmail.com',
+      cooldownSecondsRemaining: 0,
+    };
+  }
+
+  public async setupInitialAdminPassword(
+    email: string,
+    password: string,
+    confirmPassword: string
+  ): Promise<{ success: boolean; error?: string; user?: UserProfile }> {
+    try {
+      const res = await fetch('/api/auth/admin/setup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password, confirmPassword }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok || !data.token) {
+        return {
+          success: false,
+          error: data.error || 'Could not complete initial Administrator setup.',
+        };
+      }
+
+      this.adminSessionToken = data.token;
+      const user: UserProfile = {
+        id: 'admin-1',
+        name: this.state.settings.adminName || 'Administrator',
+        email: data.user?.email || email.trim(),
+        role: 'admin',
+      };
+      this.state.settings.adminEmail = user.email;
+      this.state.currentUser = user;
+      this.state.isAuthenticated = true;
+      this.saveToStorage();
+      await this.syncWithRemoteNow(false);
+      for (const listener of this.listeners) {
+        listener();
+      }
+      return { success: true, user };
+    } catch {
+      return {
+        success: false,
+        error: 'Unable to reach the authentication server. Please try again.',
+      };
+    }
+  }
+
   public async loginWithRemoteSync(
     identifier: string,
     password: string,
     role: 'admin' | 'student'
   ): Promise<{ success: boolean; error?: string; user?: UserProfile }> {
-    // Always pull authoritative state from Cloud Firestore & Express backend before evaluating login
-    await this.syncWithRemoteNow(false);
-    const res = this.login(identifier, password, role);
-    if (res.success && role === 'admin') {
-      // Ensure Admin's authoritative state is synced without altering existing Admin data
-      await this.syncWithRemoteNow(false);
+    if (role === 'admin') {
+      const cleanId = identifier.trim();
+      const rawPass = password;
+      if (!cleanId) {
+        return { success: false, error: 'Please enter the Administrator username or email.' };
+      }
+      if (!rawPass) {
+        return { success: false, error: 'Please enter your Administrator password.' };
+      }
+
+      try {
+        const res = await fetch('/api/auth/admin/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ identifier: cleanId, password: rawPass }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok || !data.token) {
+          return {
+            success: false,
+            error:
+              data.error ||
+              'Access denied. Invalid Administrator username or password.',
+          };
+        }
+
+        this.adminSessionToken = data.token;
+        await this.syncWithRemoteNow(false);
+        const user: UserProfile = {
+          id: 'admin-1',
+          name: this.state.settings.adminName || 'Administrator',
+          email: data.user?.email || this.state.settings.adminEmail || 'tarunkumarv2008@gmail.com',
+          role: 'admin',
+        };
+        this.state.currentUser = user;
+        this.state.isAuthenticated = true;
+        this.saveToStorage();
+        for (const listener of this.listeners) {
+          listener();
+        }
+        return { success: true, user };
+      } catch {
+        return {
+          success: false,
+          error: 'Could not reach the authentication server. Please try again.',
+        };
+      }
     }
-    return res;
+
+    // Student login: pull authoritative state from Cloud Firestore & Express backend first
+    await this.syncWithRemoteNow(false);
+    return this.login(identifier, password, 'student');
   }
 
   public login(
@@ -1342,45 +1517,10 @@ class ExamStore {
     }
 
     if (role === 'admin') {
-      if (!rawPass) {
-        return { success: false, error: 'Please enter your password.' };
-      }
-      const configuredAdminEmail = (
-        this.state.settings.adminEmail || 'admin@examflow.edu'
-      )
-        .trim()
-        .toLowerCase();
-      const configuredAdminPass =
-        this.state.settings.adminPassword || 'admin123';
-
-      const isAdminIdValid =
-        cleanId === 'admin' ||
-        cleanId === configuredAdminEmail ||
-        cleanId === 'taruntk2008@gmail.com';
-      const isAdminPassValid =
-        rawPass === configuredAdminPass || rawPass === 'admin123';
-
-      if (!isAdminIdValid || !isAdminPassValid) {
-        return {
-          success: false,
-          error:
-            'Access denied. Invalid Administrator username or password. Only authorized Admin credentials can access the Admin Portal.',
-        };
-      }
-
-      const user: UserProfile = {
-        id: 'admin-1',
-        name: this.state.settings.adminName || 'Administrator',
-        email: this.state.settings.adminEmail || 'admin@examflow.edu',
-        role: 'admin',
+      return {
+        success: false,
+        error: 'Administrator sign-in requires server verification. Please use the Login form.',
       };
-      this.state.currentUser = user;
-      this.state.isAuthenticated = true;
-      this.saveToStorage();
-      for (const listener of this.listeners) {
-        listener();
-      }
-      return { success: true, user };
     }
 
     // Student lookup strictly against live registered students across synced devices
@@ -1497,97 +1637,160 @@ class ExamStore {
     this.notify();
   }
 
-  private lastGeneratedAdminOtp: string | null = null;
-
-  public requestAdminPasswordResetOtp(email?: string): {
-    success: boolean;
-    otp?: string;
-    sentTo?: string;
-    error?: string;
-  } {
-    const recipient = (email || this.state.settings.adminEmail || 'taruntk2008@gmail.com').trim();
-    if (!recipient || !recipient.includes('@')) {
-      return { success: false, error: 'Please enter a valid recipient email address.' };
-    }
-    const otp = String(Math.floor(100000 + Math.random() * 900000));
-    this.lastGeneratedAdminOtp = otp;
-    return {
-      success: true,
-      otp,
-      sentTo: recipient,
-    };
-  }
-
-  public changeAdminPassword(
+  public async changeAdminPasswordAsync(
     currentPassword: string,
     newPassword: string,
     confirmPassword: string
-  ): { success: boolean; error?: string } {
-    const activePass = this.state.settings.adminPassword || 'admin123';
-    if (!currentPassword) {
-      return { success: false, error: 'Please enter your current administrator password.' };
+  ): Promise<{ success: boolean; error?: string }> {
+    if (!this.adminSessionToken) {
+      return {
+        success: false,
+        error: 'Your Administrator session has expired. Please sign in again.',
+      };
     }
-    if (currentPassword !== activePass && currentPassword !== 'admin123') {
-      return { success: false, error: 'Current administrator password is incorrect.' };
+    try {
+      const res = await fetch('/api/auth/admin/password', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${this.adminSessionToken}`,
+        },
+        body: JSON.stringify({ currentPassword, newPassword, confirmPassword }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        return {
+          success: false,
+          error: data.error || 'Failed to update Administrator password.',
+        };
+      }
+      if (typeof data.token === 'string' && data.token) {
+        this.adminSessionToken = data.token;
+      }
+      this.logActivity('student', 'Administrator security password updated.');
+      this.notify('admin');
+      return { success: true };
+    } catch {
+      return {
+        success: false,
+        error: 'Could not reach the authentication server to update password.',
+      };
     }
-    if (!newPassword || newPassword.length < 6) {
-      return { success: false, error: 'New password must be at least 6 characters long.' };
-    }
-    if (newPassword !== confirmPassword) {
-      return { success: false, error: 'New password and confirmation do not match.' };
-    }
-    this.state.settings.adminPassword = newPassword;
-    this.state.settingsUpdatedAt = Date.now();
-    this.logActivity('student', 'Administrator security password updated.');
-    this.notify('admin');
-    return { success: true };
   }
 
-  public verifyOtpAndResetAdminPassword(
-    otpInput: string,
+  public async requestAdminOtpViaSmtp(email: string): Promise<{
+    success: boolean;
+    maskedEmail?: string;
+    expiresInMinutes?: number;
+    cooldownSeconds?: number;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/auth/admin/otp/request', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        return {
+          success: false,
+          error: data.error || 'Could not dispatch verification email.',
+          cooldownSeconds: data.cooldownSeconds,
+        };
+      }
+      return {
+        success: true,
+        maskedEmail: data.maskedEmail,
+        expiresInMinutes: data.expiresInMinutes || 10,
+        cooldownSeconds: data.cooldownSeconds || 60,
+      };
+    } catch {
+      return {
+        success: false,
+        error: 'Could not reach the authentication server.',
+      };
+    }
+  }
+
+  public async requestAdminOtpViaVerifiedGoogle(
+    email: string,
+    accessToken: string
+  ): Promise<{
+    success: boolean;
+    maskedEmail?: string;
+    expiresInMinutes?: number;
+    cooldownSeconds?: number;
+    error?: string;
+  }> {
+    try {
+      const res = await fetch('/api/auth/admin/otp/google', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, accessToken }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        return {
+          success: false,
+          error: data.error || 'Google verification failed.',
+          cooldownSeconds: data.cooldownSeconds,
+        };
+      }
+      return {
+        success: true,
+        maskedEmail: data.maskedEmail,
+        expiresInMinutes: data.expiresInMinutes || 10,
+        cooldownSeconds: data.cooldownSeconds || 60,
+      };
+    } catch {
+      return {
+        success: false,
+        error: 'Could not reach the authentication server.',
+      };
+    }
+  }
+
+  public async verifyAdminOtpAndResetPassword(
+    otp: string,
     newPassword: string,
     confirmPassword: string
-  ): { success: boolean; error?: string } {
-    const cleanOtp = otpInput.trim();
-    if (!cleanOtp || cleanOtp.length !== 6) {
-      return { success: false, error: 'Please enter the 6-digit verification code.' };
-    }
-    if (this.lastGeneratedAdminOtp && cleanOtp !== this.lastGeneratedAdminOtp) {
-      return { success: false, error: 'Invalid 6-digit OTP code. Please verify and try again.' };
-    }
-    if (!newPassword || newPassword.length < 6) {
-      return { success: false, error: 'New password must be at least 6 characters long.' };
-    }
-    if (newPassword !== confirmPassword) {
-      return { success: false, error: 'New password and confirmation do not match.' };
-    }
-    this.state.settings.adminPassword = newPassword;
-    this.lastGeneratedAdminOtp = null;
-    this.logActivity('student', 'Administrator password reset via verified Gmail OTP.');
-    this.notify();
-    return { success: true };
-  }
-
-  public resetPasswordWithOtp(identifier: string, newPassword: string): boolean {
-    const clean = identifier.trim().toLowerCase();
-    if (clean === 'admin' || clean === (this.state.settings.adminEmail || '').toLowerCase()) {
-      this.state.settings.adminPassword = newPassword;
-      this.state.settingsUpdatedAt = Date.now();
-    } else {
-      const stu = this.state.students.find(
-        (s) => s.email.toLowerCase() === clean || s.studentId.toLowerCase() === clean
-      );
-      if (stu) {
-        stu.password = newPassword;
-        stu.updatedAtMs = Date.now();
+  ): Promise<{ success: boolean; error?: string }> {
+    try {
+      const res = await fetch('/api/auth/admin/otp/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ otp, newPassword, confirmPassword }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok) {
+        return {
+          success: false,
+          error: data.error || 'Verification code invalid or expired.',
+        };
       }
+      // Clear any previous Admin token since the server revoked all old sessions
+      this.adminSessionToken = null;
+      return { success: true };
+    } catch {
+      return {
+        success: false,
+        error: 'Could not reach the authentication server.',
+      };
     }
-    this.logActivity('student', `Password updated via verified OTP for ${identifier}`);
-    this.notify();
-    return true;
   }
 
   public logout() {
+    if (this.adminSessionToken) {
+      const tokenToRevoke = this.adminSessionToken;
+      this.adminSessionToken = null;
+      if (typeof window !== 'undefined') {
+        void fetch('/api/auth/admin/logout', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${tokenToRevoke}` },
+        }).catch(() => {});
+      }
+    }
     this.state.isAuthenticated = false;
     this.saveToStorage();
     for (const listener of this.listeners) {
@@ -1718,12 +1921,14 @@ class ExamStore {
     } else {
       this.state.students = [stu, ...this.state.students];
     }
-    this.state.students = mergeArrayById<StudentRecord>(
-      this.state.students,
-      [],
-      new Set(),
-      true,
-      false
+    this.state.students = sortStudentsBySectionAndName(
+      mergeArrayById<StudentRecord>(
+        this.state.students,
+        [],
+        new Set(),
+        true,
+        false
+      )
     );
 
     // Auto-assign to published exams in their section
@@ -1837,10 +2042,12 @@ class ExamStore {
 
     if (updatedStudent) {
       const stu = updatedStudent;
-      this.state.students = this.state.students.filter(
-        (s) =>
-          s.id === stu.id ||
-          s.studentId.trim().toUpperCase() !== stu.studentId.trim().toUpperCase()
+      this.state.students = sortStudentsBySectionAndName(
+        this.state.students.filter(
+          (s) =>
+            s.id === stu.id ||
+            s.studentId.trim().toUpperCase() !== stu.studentId.trim().toUpperCase()
+        )
       );
       if (
         previousStudentId &&
@@ -2647,18 +2854,26 @@ class ExamStore {
         ? 'B+ (Merit)'
         : 'B (Pass)';
 
+    const studentRec = this.state.students.find(
+      (s) =>
+        s.id === attempt.studentId ||
+        s.studentId.toLowerCase() === attempt.studentRegId.toLowerCase()
+    );
+    const resolvedSection = normalizeSection(studentRec?.section);
+
     const existing = this.state.certificates.find((c) => c.attemptId === attempt.id);
     if (existing) {
       const synced: CertificateRecord = {
         ...existing,
         studentName: attempt.studentName,
         studentRegId: attempt.studentRegId,
+        section: resolvedSection,
         examTitle: attempt.examTitle,
         subjectName: attempt.subjectName,
         score: attempt.totalScore,
         maxScore: attempt.maxScore,
         percentage: attempt.percentage,
-        grade: existing.grade || grade,
+        grade,
         publishedToStudent: publishImmediately ? true : existing.publishedToStudent,
         updatedAtMs: now,
       };
@@ -2680,6 +2895,7 @@ class ExamStore {
       studentId: attempt.studentId,
       studentName: attempt.studentName,
       studentRegId: attempt.studentRegId,
+      section: resolvedSection,
       score: attempt.totalScore,
       maxScore: attempt.maxScore,
       percentage: attempt.percentage,
@@ -2769,8 +2985,10 @@ class ExamStore {
         };
 
     const now = this.nextTimestamp();
-    this.state.students = this.state.students.map((s) =>
-      s.id === studentId ? { ...s, ...safePatch, updatedAtMs: now } : s
+    this.state.students = sortStudentsBySectionAndName(
+      this.state.students.map((s) =>
+        s.id === studentId ? { ...s, ...safePatch, updatedAtMs: now } : s
+      )
     );
     if (this.state.currentUser.id === studentId) {
       this.state.currentUser = {

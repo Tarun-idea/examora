@@ -21,6 +21,7 @@ import {
   Exam,
   ExamStatus,
   ALL_SECTIONS,
+  normalizeSection,
   normalizeAndDedupeSections,
 } from '../../services/examStore.ts';
 import { PrintablePaperModal } from './PrintablePaperModal.tsx';
@@ -171,7 +172,7 @@ export const ExamManagement: React.FC<ExamManagementProps> = ({
 
     const sub = state.subjects.find((s) => s.id === subjectId);
     const matchingStudentIds = state.students
-      .filter((s) => cleanCohorts.includes(s.section))
+      .filter((s) => cleanCohorts.includes(normalizeSection(s.section)))
       .map((s) => s.id);
 
     if (editingExamId) {
@@ -209,10 +210,7 @@ export const ExamManagement: React.FC<ExamManagementProps> = ({
         passingMarks: validPassing,
         instructions: instructions.trim(),
         status,
-        assignedStudentIds:
-          matchingStudentIds.length > 0
-            ? matchingStudentIds
-            : state.students.map((s) => s.id),
+        assignedStudentIds: matchingStudentIds,
         assignedCohorts: cleanCohorts,
         webcamProctoring,
         autoPublishAt: autoPublishAt || undefined,

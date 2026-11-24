@@ -8,7 +8,7 @@ import {
   Lock,
   Download,
 } from 'lucide-react';
-import { examStore } from '../../services/examStore.ts';
+import { examStore, normalizeSection } from '../../services/examStore.ts';
 import { downloadCertificateRecord } from '../../utils/certificateDownload.ts';
 import { generateCertificateQrBase64 } from '../../services/qrGenerator.ts';
 
@@ -70,13 +70,76 @@ export const StudentResultsView: React.FC<StudentResultsViewProps> = ({
       : undefined);
   const tpl = state.certificateTemplate;
 
-  const studentSection =
-    state.students.find(
-      (s) =>
-        s.id === attempt?.studentId ||
-        s.studentId.trim().toLowerCase() ===
-          (attempt?.studentRegId || '').trim().toLowerCase()
-    )?.section || 'Section A';
+  const matchedStudent = state.students.find(
+    (s) =>
+      s.id === attempt?.studentId ||
+      s.studentId.trim().toLowerCase() ===
+        (attempt?.studentRegId || '').trim().toLowerCase()
+  );
+  const studentSection = `Section ${normalizeSection(
+    certificate?.section || matchedStudent?.section || 'A'
+  )}`;
+
+  const accentPaletteMap = {
+    emerald: {
+      cardBorder: 'border-emerald-300',
+      iconBg: 'bg-emerald-600',
+      labelText: 'text-emerald-700',
+      outerBorder: 'border-emerald-400',
+      outerBg: 'from-emerald-50/90 via-white to-white',
+      innerBorder: 'border-emerald-200',
+      badge: 'bg-emerald-50 text-emerald-800 border-emerald-400',
+      instText: 'text-emerald-700',
+      nameCls: 'text-emerald-950 border-emerald-700',
+      scoreText: 'text-emerald-700',
+      seal: 'bg-emerald-50 border-emerald-700 text-emerald-800',
+      qrBorder: 'border-emerald-700',
+    },
+    blue: {
+      cardBorder: 'border-blue-300',
+      iconBg: 'bg-blue-600',
+      labelText: 'text-blue-700',
+      outerBorder: 'border-blue-400',
+      outerBg: 'from-blue-50/90 via-white to-white',
+      innerBorder: 'border-blue-200',
+      badge: 'bg-blue-50 text-blue-800 border-blue-400',
+      instText: 'text-blue-700',
+      nameCls: 'text-blue-950 border-blue-700',
+      scoreText: 'text-blue-700',
+      seal: 'bg-blue-50 border-blue-700 text-blue-800',
+      qrBorder: 'border-blue-700',
+    },
+    amber: {
+      cardBorder: 'border-amber-300',
+      iconBg: 'bg-amber-600',
+      labelText: 'text-amber-700',
+      outerBorder: 'border-amber-400',
+      outerBg: 'from-amber-50/90 via-white to-white',
+      innerBorder: 'border-amber-200',
+      badge: 'bg-amber-50 text-amber-800 border-amber-400',
+      instText: 'text-amber-700',
+      nameCls: 'text-amber-950 border-amber-700',
+      scoreText: 'text-amber-700',
+      seal: 'bg-amber-50 border-amber-700 text-amber-800',
+      qrBorder: 'border-amber-700',
+    },
+    indigo: {
+      cardBorder: 'border-indigo-300',
+      iconBg: 'bg-indigo-600',
+      labelText: 'text-indigo-700',
+      outerBorder: 'border-indigo-400',
+      outerBg: 'from-indigo-50/90 via-white to-white',
+      innerBorder: 'border-indigo-200',
+      badge: 'bg-indigo-50 text-indigo-800 border-indigo-400',
+      instText: 'text-indigo-700',
+      nameCls: 'text-indigo-950 border-indigo-700',
+      scoreText: 'text-indigo-700',
+      seal: 'bg-indigo-50 border-indigo-700 text-indigo-800',
+      qrBorder: 'border-indigo-700',
+    },
+  } as const;
+  const certTheme =
+    accentPaletteMap[tpl.accentTheme] || accentPaletteMap.emerald;
 
   useEffect(() => {
     let active = true;
@@ -264,14 +327,14 @@ export const StudentResultsView: React.FC<StudentResultsViewProps> = ({
 
       {/* Automatically Attached Full Certificate for Passing Candidate */}
       {attempt.passed && certificate && (
-        <div className="bg-white rounded-3xl border-2 border-emerald-300 p-6 sm:p-8 shadow-md space-y-5">
+        <div className={`bg-white rounded-3xl border-2 ${certTheme.cardBorder} p-6 sm:p-8 shadow-md space-y-5`}>
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-slate-100">
             <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center shrink-0">
+              <div className={`w-10 h-10 rounded-xl ${certTheme.iconBg} text-white flex items-center justify-center shrink-0`}>
                 <Award className="w-5 h-5" />
               </div>
               <div>
-                <div className="text-xs font-mono font-bold text-emerald-700">
+                <div className={`text-xs font-mono font-bold ${certTheme.labelText}`}>
                   Attached Certificate #{certificate.certificateNumber} ·{' '}
                   {certificate.grade}
                 </div>
@@ -290,9 +353,9 @@ export const StudentResultsView: React.FC<StudentResultsViewProps> = ({
             </button>
           </div>
 
-          {/* Official White & Emerald Certificate Sheet */}
-          <div className="certificate-sheet border-[4px] border-emerald-400 rounded-xl p-2 sm:p-3 bg-gradient-to-b from-emerald-50/90 via-white to-white relative overflow-hidden">
-            <div className="border-[2px] border-emerald-200 rounded-lg p-5 sm:p-8 relative overflow-hidden">
+          {/* Official Certificate Sheet */}
+          <div className={`certificate-sheet border-[4px] ${certTheme.outerBorder} rounded-xl p-2 sm:p-3 bg-gradient-to-b ${certTheme.outerBg} relative overflow-hidden`}>
+            <div className={`border-[2px] ${certTheme.innerBorder} rounded-lg p-5 sm:p-8 relative overflow-hidden`}>
               {/* Centered Institutional Crest Watermark */}
               <img
                 src="/assets/aistudio/pec-logo_afc415db.png"
@@ -330,7 +393,7 @@ export const StudentResultsView: React.FC<StudentResultsViewProps> = ({
                   </div>
 
                   <div className="sm:col-span-7 flex sm:justify-start justify-center sm:pl-4 pt-1">
-                    <span className="px-4 py-1 rounded-full text-[10px] font-extrabold uppercase tracking-wider bg-emerald-50 text-emerald-800 border border-emerald-400">
+                    <span className={`px-4 py-1 rounded-full text-[10px] font-extrabold uppercase tracking-wider border ${certTheme.badge}`}>
                       {tpl.headerBadgeText}
                     </span>
                   </div>
@@ -338,7 +401,7 @@ export const StudentResultsView: React.FC<StudentResultsViewProps> = ({
 
                 {/* Main Heading Block (No small center logo) */}
                 <div className="text-center space-y-1.5 pt-1">
-                  <div className="text-xs sm:text-sm font-extrabold tracking-wider uppercase text-emerald-700">
+                  <div className={`text-xs sm:text-sm font-extrabold tracking-wider uppercase ${certTheme.instText}`}>
                     {tpl.institutionName}
                   </div>
                   <h2 className="text-xl sm:text-3xl font-extrabold text-slate-900 tracking-tight">
@@ -351,7 +414,7 @@ export const StudentResultsView: React.FC<StudentResultsViewProps> = ({
 
                 {/* Candidate Name */}
                 <div className="text-center">
-                  <div className="inline-block px-8 pb-1.5 text-2xl sm:text-3xl font-extrabold text-emerald-950 border-b-[3px] border-emerald-700">
+                  <div className={`inline-block px-8 pb-1.5 text-2xl sm:text-3xl font-extrabold border-b-[3px] ${certTheme.nameCls}`}>
                     {certificate.studentName}
                   </div>
                 </div>
@@ -365,7 +428,7 @@ export const StudentResultsView: React.FC<StudentResultsViewProps> = ({
                   <p className="text-xs sm:text-[13px] text-slate-600 leading-relaxed">
                     {tpl.bodyTextTemplate}
                   </p>
-                  <div className="text-xs sm:text-sm font-mono font-extrabold text-emerald-700 pt-1">
+                  <div className={`text-xs sm:text-sm font-mono font-extrabold ${certTheme.scoreText} pt-1`}>
                     Verified Score: {certificate.score} / {certificate.maxScore}{' '}
                     ({certificate.percentage}%) &nbsp; | &nbsp; Merit Grade:{' '}
                     {certificate.grade}
@@ -410,13 +473,13 @@ export const StudentResultsView: React.FC<StudentResultsViewProps> = ({
                 {/* Bottom Row: [ ✓ VERIFIED MERIT SEAL ] + [ Dynamic Scannable QR Code ] + [ Issued Date • Verified Official Credential ] */}
                 <div className="pt-2 flex flex-col sm:flex-row items-center justify-between gap-4">
                   <div className="flex flex-wrap items-center justify-center sm:justify-start gap-4">
-                    <div className="px-6 py-3.5 rounded-xl border-2 bg-emerald-50 border-emerald-700 text-emerald-800 font-extrabold text-xs uppercase tracking-wider flex items-center gap-1.5">
+                    <div className={`px-6 py-3.5 rounded-xl border-2 font-extrabold text-xs uppercase tracking-wider flex items-center gap-1.5 ${certTheme.seal}`}>
                       <ShieldCheck className="w-4 h-4 shrink-0" />
                       <span>✓ {tpl.sealText}</span>
                     </div>
 
                     {qrDataUrl && (
-                      <div className="p-1.5 rounded-xl bg-white border-2 border-emerald-700 shadow-2xs shrink-0">
+                      <div className={`p-1.5 rounded-xl bg-white border-2 ${certTheme.qrBorder} shadow-2xs shrink-0`}>
                         <img
                           src={qrDataUrl}
                           alt={`Scannable QR Code for ${certificate.studentName}`}

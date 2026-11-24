@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   KeyRound,
   Eye,
@@ -7,11 +7,10 @@ import {
   AlertCircle,
   X,
   ShieldCheck,
-  Mail,
   Send,
 } from 'lucide-react';
 import { examStore } from '../../services/examStore.ts';
-import { sendAdminOtpGmail } from '../../services/firebase.ts';
+import { googleSignIn } from '../../services/firebase.ts';
 
 interface ChangeAdminPasswordModalProps {
   isOpen: boolean;
@@ -22,6 +21,9 @@ export const ChangeAdminPasswordModal: React.FC<ChangeAdminPasswordModalProps> =
   isOpen,
   onClose,
 }) => {
+  const defaultAdminEmail =
+    examStore.getState().settings.adminEmail || 'tarunkumarv2008@gmail.com';
+
   const [mode, setMode] = useState<'password' | 'otp'>('password');
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
@@ -30,82 +32,150 @@ export const ChangeAdminPasswordModal: React.FC<ChangeAdminPasswordModalProps> =
   const [showNew, setShowNew] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
 
-  // Gmail OTP Mode State
-  const [otpEmail, setOtpEmail] = useState('taruntk2008@gmail.com');
-  const [generatedOtp, setGeneratedOtp] = useState<string | null>(null);
+  // Server-backed Email OTP state (never stores or renders raw OTP on screen)
+  const [otpEmail, setOtpEmail] = useState(defaultAdminEmail);
+  const [smtpConfigured, setSmtpConfigured] = useState(false);
+  const [otpSentToMasked, setOtpSentToMasked] = useState<string | null>(null);
   const [otpInput, setOtpInput] = useState('');
-  const [pendingGmailConfirm, setPendingGmailConfirm] = useState<{
-    recipient: string;
-    otp: string;
-  } | null>(null);
-  const [isSendingGmail, setIsSendingGmail] = useState(false);
+  const [isSendingEmail, setIsSendingEmail] = useState(false);
+  const [resendCooldown, setResendCooldown] = useState(0);
 
   const [errorMessage, setErrorMessage] = useState('');
   const [successMessage, setSuccessMessage] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  useEffect(() => {
+    if (!isOpen) return;
+    setOtpEmail(
+      examStore.getState().settings.adminEmail || 'tarunkumarv2008@gmail.com'
+    );
+    examStore.fetchAdminAuthStatus().then((status) => {
+      setSmtpConfigured(status.smtpConfigured);
+      if (status.cooldownSecondsRemaining > 0) {
+        setResendCooldown(status.cooldownSecondsRemaining);
+      }
+    });
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (resendCooldown <= 0) return;
+    const timer = window.setInterval(() => {
+      setResendCooldown((prev) => (prev > 1 ? prev - 1 : 0));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [resendCooldown]);
+
   if (!isOpen) return null;
 
-  const handleRequestGmailOtp = () => {
+  const handleRequestSmtpOtp = async () => {
     setErrorMessage('');
     setSuccessMessage('');
-    const res = examStore.requestAdminPasswordResetOtp(otpEmail.trim() || 'taruntk2008@gmail.com');
-    if (res.success && res.otp) {
-      const recipient = res.sentTo || 'taruntk2008@gmail.com';
-      setGeneratedOtp(res.otp);
-      setOtpInput(''); // Never pre-fill OTP on screen; sent only to Gmail inbox
-      setPendingGmailConfirm({ recipient, otp: res.otp });
-    } else {
-      setErrorMessage(res.error || 'Could not generate OTP code.');
-    }
-  };
-
-  const handleConfirmSendGmail = async () => {
-    if (!pendingGmailConfirm) return;
-    const { recipient, otp } = pendingGmailConfirm;
-    // Call sendAdminOtpGmail synchronously before unmounting the button so Chrome preserves user gesture activation
-    const sendPromise = sendAdminOtpGmail(recipient, otp);
-    setIsSendingGmail(true);
-    setErrorMessage('');
-    setSuccessMessage('');
-
-    const sendRes = await sendPromise;
-    setIsSendingGmail(false);
-    setPendingGmailConfirm(null);
-
-    if (sendRes.success) {
+    setIsSendingEmail(true);
+    try {
+      const res = await examStore.requestAdminOtpViaSmtp(
+        otpEmail.trim() || defaultAdminEmail
+      );
+      if (!res.success) {
+        if (res.cooldownSeconds && res.cooldownSeconds > 0) {
+          setResendCooldown(res.cooldownSeconds);
+        }
+        setErrorMessage(res.error || 'Could not dispatch OTP email.');
+        return;
+      }
+      setOtpSentToMasked(res.maskedEmail || otpEmail.trim());
+      setResendCooldown(res.cooldownSeconds || 60);
+      setOtpInput('');
       setSuccessMessage(
-        `6-digit verification code sent to ${recipient}! Check your Gmail inbox and enter the code below.`
+        `6-digit verification code sent to ${res.maskedEmail || otpEmail}. Check your inbox and enter it below.`
       );
-    } else {
-      setErrorMessage(
-        sendRes.error || 'Failed to send verification code via Gmail. Please try again.'
-      );
+    } finally {
+      setIsSendingEmail(false);
     }
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleRequestGoogleOtp = async () => {
+    setErrorMessage('');
+    setSuccessMessage('');
+    setIsSendingEmail(true);
+    try {
+      const signInResult = await googleSignIn();
+      if (!signInResult?.accessToken) {
+        setErrorMessage('Google sign-in did not complete with Gmail permission.');
+        return;
+      }
+      const res = await examStore.requestAdminOtpViaVerifiedGoogle(
+        otpEmail.trim() || defaultAdminEmail,
+        signInResult.accessToken
+      );
+      if (!res.success) {
+        if (res.cooldownSeconds && res.cooldownSeconds > 0) {
+          setResendCooldown(res.cooldownSeconds);
+        }
+        setErrorMessage(res.error || 'Google verification failed.');
+        return;
+      }
+      setOtpSentToMasked(res.maskedEmail || otpEmail.trim());
+      setResendCooldown(res.cooldownSeconds || 60);
+      setOtpInput('');
+      setSuccessMessage(
+        `6-digit verification code sent to ${res.maskedEmail || otpEmail}. Check your Gmail inbox and enter it below.`
+      );
+    } catch (err: any) {
+      if (
+        err?.code === 'auth/popup-closed-by-user' ||
+        err?.code === 'auth/cancelled-popup-request'
+      ) {
+        setErrorMessage('Google sign-in popup was closed before completing verification. Click again when ready.');
+      } else if (err?.code === 'auth/popup-blocked') {
+        setErrorMessage(
+          'Browser blocked the Google sign-in popup. Please allow popups and try again.'
+        );
+      } else {
+        setErrorMessage(err?.message || 'Failed to verify Google account.');
+      }
+    } finally {
+      setIsSendingEmail(false);
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMessage('');
     setSuccessMessage('');
-    setIsSubmitting(true);
+    if (newPassword.length < 8) {
+      setErrorMessage('New Administrator password must be at least 8 characters long.');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setErrorMessage('New password and confirmation do not match.');
+      return;
+    }
 
-    setTimeout(() => {
+    setIsSubmitting(true);
+    try {
       const res =
         mode === 'password'
-          ? examStore.changeAdminPassword(currentPassword, newPassword, confirmPassword)
-          : examStore.verifyOtpAndResetAdminPassword(otpInput, newPassword, confirmPassword);
-
-      setIsSubmitting(false);
+          ? await examStore.changeAdminPasswordAsync(
+              currentPassword,
+              newPassword,
+              confirmPassword
+            )
+          : await examStore.verifyAdminOtpAndResetPassword(
+              otpInput.trim(),
+              newPassword,
+              confirmPassword
+            );
 
       if (res.success) {
         setSuccessMessage(
-          'Administrator password successfully updated! Future logins will use this new password.'
+          mode === 'password'
+            ? 'Administrator password successfully updated on the server!'
+            : 'Administrator password reset via verified email OTP! Please sign in again with your new password.'
         );
         setCurrentPassword('');
         setNewPassword('');
         setConfirmPassword('');
-        setGeneratedOtp(null);
+        setOtpSentToMasked(null);
         setOtpInput('');
         setTimeout(() => {
           setSuccessMessage('');
@@ -114,7 +184,9 @@ export const ChangeAdminPasswordModal: React.FC<ChangeAdminPasswordModalProps> =
       } else {
         setErrorMessage(res.error || 'Failed to update password.');
       }
-    }, 200);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -139,7 +211,7 @@ export const ChangeAdminPasswordModal: React.FC<ChangeAdminPasswordModalProps> =
               Change Administrator Password
             </h3>
             <p className="text-xs text-slate-500 dark:text-slate-400">
-              Update credentials using your current password or Gmail OTP verification.
+              Verified on the server using your current password or inbox OTP.
             </p>
           </div>
         </div>
@@ -174,7 +246,7 @@ export const ChangeAdminPasswordModal: React.FC<ChangeAdminPasswordModalProps> =
                 : 'text-slate-600 dark:text-slate-400'
             }`}
           >
-            Gmail OTP (taruntk2008)
+            Email OTP Verification
           </button>
         </div>
 
@@ -225,77 +297,49 @@ export const ChangeAdminPasswordModal: React.FC<ChangeAdminPasswordModalProps> =
                   type="email"
                   value={otpEmail}
                   onChange={(e) => setOtpEmail(e.target.value)}
+                  placeholder="Authorized Admin Settings email"
                   className="flex-1 px-3.5 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-mono text-slate-900"
                 />
                 <button
                   type="button"
-                  disabled={isSendingGmail}
-                  onClick={handleRequestGmailOtp}
-                  className="px-3 py-2 rounded-xl bg-[#0066FF] hover:bg-blue-700 text-white text-xs font-bold flex items-center gap-1.5 shrink-0 cursor-pointer"
+                  disabled={isSendingEmail || resendCooldown > 0}
+                  onClick={() =>
+                    smtpConfigured
+                      ? void handleRequestSmtpOtp()
+                      : void handleRequestGoogleOtp()
+                  }
+                  className="px-3 py-2 rounded-xl bg-[#0066FF] hover:bg-blue-700 disabled:opacity-60 text-white text-xs font-bold flex items-center gap-1.5 shrink-0 cursor-pointer"
                 >
                   <Send className="w-3.5 h-3.5" />
-                  <span>Get OTP</span>
+                  <span>
+                    {isSendingEmail
+                      ? 'Sending...'
+                      : resendCooldown > 0
+                      ? `${resendCooldown}s`
+                      : 'Send OTP'}
+                  </span>
                 </button>
               </div>
 
-              {pendingGmailConfirm && (
-                <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 space-y-2 text-xs">
-                  <div className="font-bold text-amber-900 flex items-center gap-1.5">
-                    <Mail className="w-4 h-4 text-amber-700 shrink-0" />
-                    <span>
-                      Send 6-digit OTP email via Gmail to{' '}
-                      <span className="font-mono underline">{pendingGmailConfirm.recipient}</span>?
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      disabled={isSendingGmail}
-                      onClick={handleConfirmSendGmail}
-                      className="flex-1 py-1.5 px-3 rounded-lg bg-[#0066FF] hover:bg-blue-700 text-white font-bold text-[11px] cursor-pointer"
-                    >
-                      {isSendingGmail ? 'Sending via Gmail...' : 'Confirm & Send Email'}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setPendingGmailConfirm(null)}
-                      className="py-1.5 px-2.5 rounded-lg border border-amber-300 bg-white text-amber-900 font-semibold text-[11px] cursor-pointer"
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              )}
-
-              {generatedOtp && (
-                <div className="p-2.5 rounded-xl bg-blue-50 border border-blue-200 flex items-center justify-between text-xs">
-                  <span className="font-semibold text-[#0052D4] truncate">
-                    Inbox: <strong className="font-mono">{otpEmail}</strong>
-                  </span>
-                  <button
-                    type="button"
-                    disabled={isSendingGmail}
-                    onClick={() =>
-                      setPendingGmailConfirm({
-                        recipient: otpEmail || 'taruntk2008@gmail.com',
-                        otp: generatedOtp,
-                      })
-                    }
-                    className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-bold cursor-pointer"
-                  >
-                    {isSendingGmail ? 'Sending...' : 'Send / Resend to Gmail'}
-                  </button>
+              {otpSentToMasked && (
+                <div className="p-2.5 rounded-xl bg-blue-50 border border-blue-200 text-xs text-[#0052D4] font-medium">
+                  Verification code sent strictly to{' '}
+                  <strong className="font-mono">{otpSentToMasked}</strong>. Open
+                  your inbox to retrieve the 6-digit code.
                 </div>
               )}
 
               <input
                 type="text"
+                inputMode="numeric"
                 required
                 maxLength={6}
-                placeholder="Enter 6-digit OTP from your Gmail inbox"
+                placeholder="Enter 6-digit OTP from your email inbox"
                 value={otpInput}
-                onChange={(e) => setOtpInput(e.target.value)}
-                className="w-full px-3.5 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-mono text-center font-bold text-slate-900"
+                onChange={(e) =>
+                  setOtpInput(e.target.value.replace(/\D/g, '').slice(0, 6))
+                }
+                className="w-full px-3.5 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-mono text-center font-bold tracking-[0.25em] text-slate-900"
               />
             </div>
           )}
@@ -303,13 +347,13 @@ export const ChangeAdminPasswordModal: React.FC<ChangeAdminPasswordModalProps> =
           {/* New Password */}
           <div>
             <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-              New Admin Password * (minimum 6 characters)
+              New Admin Password * (minimum 8 characters)
             </label>
             <div className="relative">
               <input
                 type={showNew ? 'text' : 'password'}
                 required
-                minLength={6}
+                minLength={8}
                 placeholder="Enter new administrator password"
                 value={newPassword}
                 onChange={(e) => setNewPassword(e.target.value)}
@@ -334,7 +378,7 @@ export const ChangeAdminPasswordModal: React.FC<ChangeAdminPasswordModalProps> =
               <input
                 type={showConfirm ? 'text' : 'password'}
                 required
-                minLength={6}
+                minLength={8}
                 placeholder="Re-enter new administrator password"
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}

@@ -1,14 +1,17 @@
+import 'dotenv/config';
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
+import { ServerAdminAuthService } from './serverAuth.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const DATA_DIR = path.join(__dirname, 'data');
 const STATE_FILE = path.join(DATA_DIR, 'examflow_shared_state.json');
+const adminAuth = new ServerAdminAuthService(DATA_DIR);
 
 interface SharedSyncPayload {
   updatedAt: number;
@@ -52,6 +55,7 @@ function isCorruptedMojibakeText(text?: string): boolean {
   if (!trimmed) return true;
   let badCount = 0;
   let asciiAlphaNum = 0;
+  let printableAscii = 0;
   for (let i = 0; i < trimmed.length; i++) {
     const code = trimmed.charCodeAt(i);
     if (
@@ -60,6 +64,9 @@ function isCorruptedMojibakeText(text?: string): boolean {
       (code >= 48 && code <= 57)
     ) {
       asciiAlphaNum++;
+      printableAscii++;
+    } else if (code >= 32 && code <= 126) {
+      printableAscii++;
     } else if (
       code < 32 &&
       code !== 9 &&
@@ -73,8 +80,33 @@ function isCorruptedMojibakeText(text?: string): boolean {
       badCount += 2;
     }
   }
-  if (asciiAlphaNum === 0) return true;
+  if (asciiAlphaNum === 0) {
+    // Allow standalone printable ASCII code/symbol lines such as `{`, `}`, `};`, `* * *`, `---`
+    return !(badCount === 0 && printableAscii > 0);
+  }
   return badCount / trimmed.length > 0.12;
+}
+
+function sortServerStudentsBySectionAndName(students: any[]): any[] {
+  return [...students].sort((a, b) => {
+    const secA = normalizeServerSection(a?.section);
+    const secB = normalizeServerSection(b?.section);
+    const idxA = VALID_SECTIONS.indexOf(secA);
+    const idxB = VALID_SECTIONS.indexOf(secB);
+    if (idxA !== idxB) return idxA - idxB;
+
+    const nameCmp = String(a?.name || '')
+      .trim()
+      .localeCompare(String(b?.name || '').trim(), undefined, { sensitivity: 'base' });
+    if (nameCmp !== 0) return nameCmp;
+
+    return String(a?.studentId || '')
+      .trim()
+      .localeCompare(String(b?.studentId || '').trim(), undefined, {
+        numeric: true,
+        sensitivity: 'base',
+      });
+  });
 }
 
 const LEGACY_PURGED_QUESTION_IDS = new Set([
@@ -93,10 +125,12 @@ const LEGACY_PURGED_QUESTION_IDS = new Set([
 function sanitizeServerStateCollections(stateObj: Record<string, any>): Record<string, any> {
   if (!stateObj || typeof stateObj !== 'object') return stateObj;
   if (Array.isArray(stateObj.students)) {
-    stateObj.students = stateObj.students.map((s: any) => ({
-      ...s,
-      section: normalizeServerSection(s.section),
-    }));
+    stateObj.students = sortServerStudentsBySectionAndName(
+      stateObj.students.map((s: any) => ({
+        ...s,
+        section: normalizeServerSection(s.section),
+      }))
+    );
   }
   if (Array.isArray(stateObj.subjects)) {
     stateObj.subjects = stateObj.subjects.map((sub: any) => {
@@ -179,6 +213,13 @@ function sanitizeServerStateCollections(stateObj: Record<string, any>): Record<s
       };
     });
   }
+  // Never persist or return plaintext Admin passwords in shared state
+  if (stateObj.settings && typeof stateObj.settings === 'object') {
+    if ('adminPassword' in stateObj.settings) {
+      const { adminPassword: _removed, ...safeSettings } = stateObj.settings;
+      stateObj.settings = safeSettings;
+    }
+  }
   return stateObj;
 }
 
@@ -189,7 +230,21 @@ function loadServerState(): SharedSyncPayload {
       const raw = fs.readFileSync(STATE_FILE, 'utf-8');
       const parsed = JSON.parse(raw);
       if (parsed && typeof parsed === 'object' && parsed.state) {
+        const legacyEmail = parsed.state?.settings?.adminEmail;
+        const legacyPass = parsed.state?.settings?.adminPassword;
+        adminAuth.migrateLegacyAdminCredentials(legacyEmail, legacyPass);
+
+        const hadPlaintextPass = Boolean(
+          parsed.state?.settings && 'adminPassword' in parsed.state.settings
+        );
         parsed.state = sanitizeServerStateCollections(parsed.state);
+        if (hadPlaintextPass) {
+          try {
+            fs.writeFileSync(STATE_FILE, JSON.stringify(parsed, null, 2), 'utf-8');
+          } catch {
+            // ignore write errors
+          }
+        }
         return parsed as SharedSyncPayload;
       }
     }
@@ -605,6 +660,192 @@ async function startServer() {
     }
   });
 
+  // =========================================================
+  // SECURE SERVER-SIDE ADMIN AUTH & ZERO-LEAK EMAIL OTP ROUTES
+  // =========================================================
+  const getSettingsAdminEmail = (): string | undefined =>
+    typeof memoryStore.state?.settings?.adminEmail === 'string'
+      ? memoryStore.state.settings.adminEmail
+      : undefined;
+
+  const getClientIpKey = (req: express.Request): string =>
+    String(
+      req.headers['x-forwarded-for'] ||
+        req.socket?.remoteAddress ||
+        'unknown-client'
+    )
+      .split(',')[0]
+      .trim();
+
+  app.get('/api/auth/admin/status', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.json(adminAuth.getPublicStatus(getSettingsAdminEmail()));
+  });
+
+  app.post('/api/auth/admin/setup', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    const email = String(req.body?.email || '').trim();
+    const password = String(req.body?.password || '');
+    const confirmPassword = String(req.body?.confirmPassword || '');
+    const result = adminAuth.setupInitialPassword(email, password, confirmPassword);
+    if (!result.ok) {
+      res.status(400).json({ ok: false, error: result.error });
+      return;
+    }
+
+    // Keep Admin Settings email synced with the claimed setup email
+    if (result.email) {
+      const nextState = {
+        ...memoryStore.state,
+        settings: {
+          ...(memoryStore.state.settings || {}),
+          adminEmail: result.email,
+        },
+        settingsUpdatedAt: Date.now(),
+      };
+      saveServerState({ updatedAt: Date.now(), state: nextState });
+    }
+
+    res.json({
+      ok: true,
+      token: result.token,
+      user: {
+        id: 'admin-1',
+        name: memoryStore.state?.settings?.adminName || 'Administrator',
+        email: result.email,
+        role: 'admin',
+      },
+    });
+  });
+
+  app.post('/api/auth/admin/login', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    const identifier = String(req.body?.identifier || '');
+    const password = String(req.body?.password || '');
+    const result = adminAuth.loginAdmin(
+      identifier,
+      password,
+      getClientIpKey(req),
+      getSettingsAdminEmail()
+    );
+    if (!result.ok) {
+      res.status(result.statusCode || 401).json({ ok: false, error: result.error });
+      return;
+    }
+
+    res.json({
+      ok: true,
+      token: result.token,
+      user: {
+        id: 'admin-1',
+        name: memoryStore.state?.settings?.adminName || 'Administrator',
+        email: result.email,
+        role: 'admin',
+      },
+    });
+  });
+
+  app.get('/api/auth/admin/session', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    const session = adminAuth.verifyBearerHeader(req.headers.authorization);
+    if (!session) {
+      res.status(401).json({ ok: false, authenticated: false });
+      return;
+    }
+    res.json({
+      ok: true,
+      authenticated: true,
+      email: session.email,
+    });
+  });
+
+  app.post('/api/auth/admin/logout', (req, res) => {
+    adminAuth.revokeBearerHeader(req.headers.authorization);
+    res.json({ ok: true });
+  });
+
+  app.post('/api/auth/admin/password', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    const currentPassword = String(req.body?.currentPassword || '');
+    const newPassword = String(req.body?.newPassword || '');
+    const confirmPassword = String(req.body?.confirmPassword || '');
+    const result = adminAuth.changePasswordAuthenticated(
+      req.headers.authorization,
+      currentPassword,
+      newPassword,
+      confirmPassword,
+      getSettingsAdminEmail()
+    );
+    if (!result.ok) {
+      res.status(result.statusCode || 400).json({ ok: false, error: result.error });
+      return;
+    }
+    res.json({ ok: true, token: result.token });
+  });
+
+  app.post('/api/auth/admin/otp/request', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    const email = String(req.body?.email || '').trim();
+    const result = await adminAuth.requestOtpViaSmtp(email, getSettingsAdminEmail());
+    if (!result.ok) {
+      res.status(result.statusCode || 400).json({
+        ok: false,
+        error: result.error,
+        cooldownSeconds: result.cooldownSeconds,
+      });
+      return;
+    }
+    res.json({
+      ok: true,
+      maskedEmail: result.maskedEmail,
+      expiresInMinutes: result.expiresInMinutes,
+      cooldownSeconds: result.cooldownSeconds,
+    });
+  });
+
+  app.post('/api/auth/admin/otp/google', async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    const email = String(req.body?.email || '').trim();
+    const accessToken = String(req.body?.accessToken || '').trim();
+    const result = await adminAuth.requestOtpViaVerifiedGoogle(
+      email,
+      accessToken,
+      getSettingsAdminEmail()
+    );
+    if (!result.ok) {
+      res.status(result.statusCode || 400).json({
+        ok: false,
+        error: result.error,
+        cooldownSeconds: result.cooldownSeconds,
+      });
+      return;
+    }
+    res.json({
+      ok: true,
+      maskedEmail: result.maskedEmail,
+      expiresInMinutes: result.expiresInMinutes,
+      cooldownSeconds: result.cooldownSeconds,
+    });
+  });
+
+  app.post('/api/auth/admin/otp/verify', (req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    const otp = String(req.body?.otp || '').trim();
+    const newPassword = String(req.body?.newPassword || '');
+    const confirmPassword = String(req.body?.confirmPassword || '');
+    const result = adminAuth.verifyOtpAndResetPassword(
+      otp,
+      newPassword,
+      confirmPassword,
+      getSettingsAdminEmail()
+    );
+    if (!result.ok) {
+      res.status(result.statusCode || 400).json({ ok: false, error: result.error });
+      return;
+    }
+    res.json({ ok: true });
+  });
+
   // Health & Live Shared State API for Cross-Device Student Login & Exam Sync
   app.get('/api/state', (_req, res) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
@@ -615,18 +856,40 @@ async function startServer() {
     try {
       const incomingState = req.body?.state;
       const replaceAll = Boolean(req.body?.replaceAll);
-      const role: 'admin' | 'student' | 'anonymous' =
+      const requestedRole: 'admin' | 'student' | 'anonymous' =
         req.body?.role === 'admin'
           ? 'admin'
           : req.body?.role === 'student'
           ? 'student'
           : 'anonymous';
 
+      // Strictly require a server-verified Admin Bearer session for any Admin write or replaceAll
+      if (requestedRole === 'admin' || replaceAll) {
+        const verifiedSession = adminAuth.verifyBearerHeader(
+          req.headers.authorization
+        );
+        if (!verifiedSession) {
+          res.status(401).json({
+            error:
+              'Unauthorized Administrator mutation. Please sign in with valid Admin credentials.',
+          });
+          return;
+        }
+      }
+
       if (incomingState && typeof incomingState === 'object') {
         const nextState =
-          replaceAll && role === 'admin'
+          replaceAll && requestedRole === 'admin'
             ? incomingState
-            : mergeServerStates(memoryStore.state, incomingState, role);
+            : mergeServerStates(memoryStore.state, incomingState, requestedRole);
+
+        // Keep server recovery email automatically synchronized when Admin updates Settings email
+        if (
+          requestedRole === 'admin' &&
+          typeof nextState?.settings?.adminEmail === 'string'
+        ) {
+          adminAuth.syncRecoveryEmail(nextState.settings.adminEmail);
+        }
 
         const nextPayload: SharedSyncPayload = {
           updatedAt: Date.now(),

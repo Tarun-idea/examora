@@ -51,8 +51,12 @@ export const initAuth = (
 
 // Must be called directly from a button click or user interaction (no prior awaits)
 export const googleSignIn = async (): Promise<{ user: FirebaseUser; accessToken: string } | null> => {
+  if (isSigningIn) {
+    return null;
+  }
   try {
     isSigningIn = true;
+    googleAuthProvider.setCustomParameters({ prompt: 'select_account' });
     // Call signInWithPopup synchronously in the first tick of the click handler
     const popupPromise = signInWithPopup(auth, googleAuthProvider);
     const result = await popupPromise;
@@ -64,7 +68,16 @@ export const googleSignIn = async (): Promise<{ user: FirebaseUser; accessToken:
     cachedAccessToken = credential.accessToken;
     return { user: result.user, accessToken: cachedAccessToken };
   } catch (error: any) {
-    console.error('Sign in error:', error);
+    const code = error?.code;
+    if (
+      code === 'auth/popup-closed-by-user' ||
+      code === 'auth/cancelled-popup-request' ||
+      code === 'auth/popup-blocked'
+    ) {
+      // Expected user dismissal or browser popup block — handled inline by callers without console error
+      throw error;
+    }
+    console.warn('Google Sign-In failed:', code || error?.message || error);
     throw error;
   } finally {
     isSigningIn = false;
@@ -162,7 +175,10 @@ export async function sendGmailMessage(params: {
     };
   } catch (err: any) {
     let friendly = err?.message || 'Failed to send email via Gmail.';
-    if (err?.code === 'auth/popup-closed-by-user') {
+    if (
+      err?.code === 'auth/popup-closed-by-user' ||
+      err?.code === 'auth/cancelled-popup-request'
+    ) {
       friendly = 'Google sign-in popup was closed before completing Gmail authorization.';
     } else if (err?.code === 'auth/popup-blocked') {
       friendly =

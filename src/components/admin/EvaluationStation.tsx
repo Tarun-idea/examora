@@ -10,6 +10,7 @@ import {
   XCircle,
   Filter,
   Users,
+  ArrowUpDown,
 } from 'lucide-react';
 import {
   examStore,
@@ -29,6 +30,15 @@ type OutcomeFilter =
   | 'not-completed'
   | 'pending'
   | 'published';
+
+type EvalStudentSortOrder =
+  | 'reg-asc'
+  | 'reg-desc'
+  | 'name-asc'
+  | 'name-desc'
+  | 'score-desc'
+  | 'score-asc'
+  | 'section-asc';
 
 interface NotCompletedEntry {
   kind: 'not-completed';
@@ -61,6 +71,8 @@ export const EvaluationStation: React.FC<EvaluationStationProps> = () => {
   const [examFilter, setExamFilter] = useState<string>('ALL');
   const [sectionFilter, setSectionFilter] = useState<string>('ALL');
   const [outcomeFilter, setOutcomeFilter] = useState<OutcomeFilter>('ALL');
+  const [studentSortOrder, setStudentSortOrder] =
+    useState<EvalStudentSortOrder>('section-asc');
   const [selectedItemId, setSelectedItemId] = useState<string>(
     state.attempts[0]?.id || ''
   );
@@ -177,6 +189,60 @@ export const EvaluationStation: React.FC<EvaluationStationProps> = () => {
       return att.status === 'published';
     }
     return true;
+  }).sort((a, b) => {
+    const getRegId = (item: EvaluationListItem) =>
+      item.kind === 'attempt' ? item.attempt.studentRegId : item.studentRegId;
+    const getName = (item: EvaluationListItem) =>
+      item.kind === 'attempt' ? item.attempt.studentName : item.studentName;
+    const getScore = (item: EvaluationListItem) =>
+      item.kind === 'attempt' ? item.attempt.percentage : -1;
+
+    if (studentSortOrder === 'reg-asc') {
+      return getRegId(a).localeCompare(getRegId(b), undefined, {
+        numeric: true,
+        sensitivity: 'base',
+      });
+    }
+    if (studentSortOrder === 'reg-desc') {
+      return getRegId(b).localeCompare(getRegId(a), undefined, {
+        numeric: true,
+        sensitivity: 'base',
+      });
+    }
+    if (studentSortOrder === 'name-asc') {
+      return getName(a).localeCompare(getName(b), undefined, {
+        numeric: true,
+        sensitivity: 'base',
+      });
+    }
+    if (studentSortOrder === 'name-desc') {
+      return getName(b).localeCompare(getName(a), undefined, {
+        numeric: true,
+        sensitivity: 'base',
+      });
+    }
+    if (studentSortOrder === 'score-desc') {
+      return getScore(b) - getScore(a);
+    }
+    if (studentSortOrder === 'score-asc') {
+      return getScore(a) - getScore(b);
+    }
+    if (studentSortOrder === 'section-asc') {
+      const secCmp = a.section.localeCompare(b.section, undefined, {
+        numeric: true,
+        sensitivity: 'base',
+      });
+      if (secCmp !== 0) return secCmp;
+      const nameCmp = getName(a).localeCompare(getName(b), undefined, {
+        sensitivity: 'base',
+      });
+      if (nameCmp !== 0) return nameCmp;
+      return getRegId(a).localeCompare(getRegId(b), undefined, {
+        numeric: true,
+        sensitivity: 'base',
+      });
+    }
+    return 0;
   });
 
   // Counts for filter pills (respecting current Exam & Section filter)
@@ -366,6 +432,32 @@ export const EvaluationStation: React.FC<EvaluationStationProps> = () => {
                     {sec}
                   </option>
                 ))}
+              </select>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <ArrowUpDown className="w-4 h-4 text-blue-600" />
+              <label
+                htmlFor="eval-student-sort"
+                className="text-xs font-bold text-slate-700"
+              >
+                Student Sort Order:
+              </label>
+              <select
+                id="eval-student-sort"
+                value={studentSortOrder}
+                onChange={(e) =>
+                  setStudentSortOrder(e.target.value as EvalStudentSortOrder)
+                }
+                className="px-3.5 py-2 rounded-xl border border-slate-200 bg-slate-50 text-xs font-bold text-slate-900 focus:outline-none focus:border-blue-600"
+              >
+                <option value="reg-asc">Student ID / Roll No (A → Z)</option>
+                <option value="reg-desc">Student ID / Roll No (Z → A)</option>
+                <option value="name-asc">Student Name (A → Z)</option>
+                <option value="name-desc">Student Name (Z → A)</option>
+                <option value="score-desc">Score (High → Low)</option>
+                <option value="score-asc">Score (Low → High)</option>
+                <option value="section-asc">Section (Sec A → Sec L)</option>
               </select>
             </div>
           </div>

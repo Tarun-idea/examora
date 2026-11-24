@@ -7,8 +7,17 @@ import {
   XCircle,
   Crown,
   TrendingUp,
+  ArrowUpDown,
 } from 'lucide-react';
 import { examStore } from '../../services/examStore.ts';
+
+type LeaderboardSortOrder =
+  | 'score-desc'
+  | 'score-asc'
+  | 'reg-asc'
+  | 'reg-desc'
+  | 'name-asc'
+  | 'name-desc';
 
 export const LeaderboardPage: React.FC = () => {
   const state = examStore.getState();
@@ -16,15 +25,57 @@ export const LeaderboardPage: React.FC = () => {
   const [categoryTab, setCategoryTab] = useState<
     'overall' | 'contests' | 'exams' | 'college'
   >('overall');
+  const [sortOrder, setSortOrder] =
+    useState<LeaderboardSortOrder>('score-desc');
 
-  const rankedAttempts = [...state.attempts]
+  const filteredAttempts = [...state.attempts]
     .filter((a) => (selectedExamId === 'ALL' ? true : a.examId === selectedExamId))
     .filter((a) => {
       if (categoryTab === 'contests') return a.codingScore > 0;
+      if (categoryTab === 'exams') return a.status !== 'in-progress';
       if (categoryTab === 'college') return a.passed;
       return true;
-    })
-    .sort((a, b) => b.percentage - a.percentage || b.totalScore - a.totalScore);
+    });
+
+  // Compute true merit rank strictly by performance (percentage desc, then totalScore desc)
+  const meritOrdered = [...filteredAttempts].sort(
+    (a, b) => b.percentage - a.percentage || b.totalScore - a.totalScore
+  );
+  const meritRankById = new Map<string, number>();
+  meritOrdered.forEach((att, idx) => {
+    meritRankById.set(att.id, idx + 1);
+  });
+
+  const rankedAttempts = [...filteredAttempts].sort((a, b) => {
+    if (sortOrder === 'reg-asc') {
+      return a.studentRegId.localeCompare(b.studentRegId, undefined, {
+        numeric: true,
+        sensitivity: 'base',
+      });
+    }
+    if (sortOrder === 'reg-desc') {
+      return b.studentRegId.localeCompare(a.studentRegId, undefined, {
+        numeric: true,
+        sensitivity: 'base',
+      });
+    }
+    if (sortOrder === 'name-asc') {
+      return a.studentName.localeCompare(b.studentName, undefined, {
+        numeric: true,
+        sensitivity: 'base',
+      });
+    }
+    if (sortOrder === 'name-desc') {
+      return b.studentName.localeCompare(a.studentName, undefined, {
+        numeric: true,
+        sensitivity: 'base',
+      });
+    }
+    if (sortOrder === 'score-asc') {
+      return a.percentage - b.percentage || a.totalScore - b.totalScore;
+    }
+    return b.percentage - a.percentage || b.totalScore - a.totalScore;
+  });
 
   const handleExportLeaderboard = () => {
     const header =
@@ -32,7 +83,7 @@ export const LeaderboardPage: React.FC = () => {
     const rows = rankedAttempts
       .map(
         (a, idx) =>
-          `${idx + 1},"${a.studentRegId}","${a.studentName}","${a.examTitle}",${
+          `${meritRankById.get(a.id) ?? idx + 1},"${a.studentRegId}","${a.studentName}","${a.examTitle}",${
             a.totalScore
           },${a.maxScore},${a.percentage}%,"${a.passed ? 'PASS' : 'FAIL'}",${
             a.violationCount
@@ -73,9 +124,11 @@ export const LeaderboardPage: React.FC = () => {
             onChange={(e) => setSelectedExamId(e.target.value)}
             className="px-4 py-2.5 rounded-xl border border-purple-500/35 bg-[#12163E] text-xs font-bold text-white"
           >
-            <option value="ALL">All Examinations</option>
+            <option value="ALL" className="bg-[#0E1132] text-white">
+              All Examinations
+            </option>
             {state.exams.map((ex) => (
-              <option key={ex.id} value={ex.id}>
+              <option key={ex.id} value={ex.id} className="bg-[#0E1132] text-white">
                 {ex.title}
               </option>
             ))}
@@ -96,29 +149,68 @@ export const LeaderboardPage: React.FC = () => {
       <div className="rounded-3xl bg-[#0D102D] border border-purple-500/30 p-6 sm:p-8 shadow-xl">
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-center">
           <div className="lg:col-span-8 space-y-4">
-            {/* Category Filter Pill Tabs */}
-            <div className="inline-flex items-center gap-1.5 p-1 rounded-xl bg-[#141946] border border-purple-500/30">
-              {(
-                [
-                  { id: 'overall', label: 'Overall' },
-                  { id: 'contests', label: 'Coding' },
-                  { id: 'exams', label: 'Exams' },
-                  { id: 'college', label: 'Passed' },
-                ] as const
-              ).map((tab) => (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => setCategoryTab(tab.id)}
-                  className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
-                    categoryTab === tab.id
-                      ? 'bg-gradient-to-r from-[#7C3AED] to-[#4F46E5] text-white shadow-sm'
-                      : 'text-slate-400 hover:text-white'
-                  }`}
+            {/* Category Filter Pill Tabs & Student Sort Order */}
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="inline-flex items-center gap-1.5 p-1 rounded-xl bg-[#141946] border border-purple-500/30">
+                {(
+                  [
+                    { id: 'overall', label: 'Overall' },
+                    { id: 'contests', label: 'Coding' },
+                    { id: 'exams', label: 'Exams' },
+                    { id: 'college', label: 'Passed' },
+                  ] as const
+                ).map((tab) => (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setCategoryTab(tab.id)}
+                    className={`px-4 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                      categoryTab === tab.id
+                        ? 'bg-gradient-to-r from-[#7C3AED] to-[#4F46E5] text-white shadow-sm'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    {tab.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex items-center gap-2">
+                <ArrowUpDown className="w-4 h-4 text-purple-400 shrink-0" />
+                <label
+                  htmlFor="leaderboard-student-sort"
+                  className="text-xs font-semibold text-slate-300 whitespace-nowrap"
                 >
-                  {tab.label}
-                </button>
-              ))}
+                  Student Sort Order:
+                </label>
+                <select
+                  id="leaderboard-student-sort"
+                  value={sortOrder}
+                  onChange={(e) =>
+                    setSortOrder(e.target.value as LeaderboardSortOrder)
+                  }
+                  className="px-3.5 py-2 rounded-xl border border-purple-500/35 bg-[#141946] text-xs font-semibold text-white focus:outline-none focus:border-purple-400"
+                >
+                  <option value="score-desc" className="bg-[#0E1132] text-white">
+                    Rank / Score (High → Low)
+                  </option>
+                  <option value="score-asc" className="bg-[#0E1132] text-white">
+                    Score (Low → High)
+                  </option>
+                  <option value="reg-asc" className="bg-[#0E1132] text-white">
+                    Student ID / Roll No (A → Z)
+                  </option>
+                  <option value="reg-desc" className="bg-[#0E1132] text-white">
+                    Student ID / Roll No (Z → A)
+                  </option>
+                  <option value="name-asc" className="bg-[#0E1132] text-white">
+                    Student Name (A → Z)
+                  </option>
+                  <option value="name-desc" className="bg-[#0E1132] text-white">
+                    Student Name (Z → A)
+                  </option>
+                </select>
+              </div>
             </div>
 
             {/* Leaderboard Table */}
@@ -139,24 +231,28 @@ export const LeaderboardPage: React.FC = () => {
                   </thead>
                   <tbody className="divide-y divide-purple-500/15 text-xs">
                     {rankedAttempts.length > 0 ? (
-                      rankedAttempts.map((att, idx) => (
+                      rankedAttempts.map((att, idx) => {
+                        const meritRank = meritRankById.get(att.id) ?? idx + 1;
+                        const isTopPodium =
+                          meritRank <= 3 && (att.totalScore > 0 || att.passed);
+                        return (
                         <tr key={att.id} className="hover:bg-white/5">
                           <td className="py-4 px-4 font-mono font-extrabold text-white">
                             <span className="inline-flex items-center gap-1">
-                              {idx < 3 && (
+                              {isTopPodium && (
                                 <Medal className="w-4 h-4 text-amber-400" />
                               )}
-                              {idx + 1}
+                              {meritRank}
                             </span>
                           </td>
                           <td className="py-4 px-4">
                             <div className="font-bold text-white flex items-center gap-1.5">
-                              {idx < 3 && (
+                              {isTopPodium && (
                                 <Crown
                                   className={`w-4 h-4 ${
-                                    idx === 0
+                                    meritRank === 1
                                       ? 'text-amber-400'
-                                      : idx === 1
+                                      : meritRank === 2
                                       ? 'text-slate-300'
                                       : 'text-orange-400'
                                   }`}
@@ -210,7 +306,8 @@ export const LeaderboardPage: React.FC = () => {
                             )}
                           </td>
                         </tr>
-                      ))
+                        );
+                      })
                     ) : (
                       <tr>
                         <td

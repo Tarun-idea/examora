@@ -225,7 +225,7 @@ export const HallTicketModal: React.FC<HallTicketModalProps> = ({
           764
         );
         ctx.fillText(
-          '3. Reaching 3 proctoring violations automatically terminates and submits the examination attempt.',
+          `3. Reaching ${Math.max(1, settings.maxViolationsAllowed || 3)} proctoring violations automatically terminates and submits the examination attempt.`,
           80,
           796
         );
@@ -240,7 +240,7 @@ export const HallTicketModal: React.FC<HallTicketModalProps> = ({
         ctx.textAlign = 'left';
         ctx.fillStyle = '#0F172A';
         ctx.font = 'bold 20px Inter, system-ui, sans-serif';
-        ctx.fillText(settings.adminName || 'Dr. Sarah Jenkins', 80, 905);
+        ctx.fillText(settings.adminName || 'Dr. S. Prasanna Devi', 80, 905);
         ctx.fillStyle = '#64748B';
         ctx.font = '16px Inter, system-ui, sans-serif';
         ctx.fillText('Chief Examination Controller', 80, 932);
@@ -428,7 +428,7 @@ export const HallTicketModal: React.FC<HallTicketModalProps> = ({
             <div className="pt-3 border-t border-slate-100 flex items-center justify-between text-xs">
               <div>
                 <div className="font-extrabold text-slate-900">
-                  {settings.adminName || 'Dr. Sarah Jenkins'}
+                  {settings.adminName || 'Dr. S. Prasanna Devi'}
                 </div>
                 <div className="text-[11px] text-slate-500">
                   Chief Examination Controller
