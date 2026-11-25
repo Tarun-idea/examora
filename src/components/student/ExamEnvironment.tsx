@@ -62,6 +62,7 @@ export const ExamEnvironment: React.FC<ExamEnvironmentProps> = ({
 
   // Cooldown ref to avoid duplicate simultaneous blur + visibilitychange events within 800ms
   const lastViolationTsRef = useRef<number>(0);
+  const autoSubmitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Coding editor execution state
   const [codeResults, setCodeResults] = useState<TestCaseResult[] | null>(null);
@@ -87,8 +88,14 @@ export const ExamEnvironment: React.FC<ExamEnvironmentProps> = ({
         setAttempt({ ...updated });
       }
     });
-    return unsub;
-  }, [examId, studentId, attempt.id]);
+    return () => {
+      unsub();
+      if (autoSubmitTimerRef.current) {
+        clearTimeout(autoSubmitTimerRef.current);
+        autoSubmitTimerRef.current = null;
+      }
+    };
+  }, [examId, studentId]);
 
   const engageFullscreenAndKeyboardLock = useCallback(() => {
     try {
@@ -134,6 +141,10 @@ export const ExamEnvironment: React.FC<ExamEnvironmentProps> = ({
   }, [releaseFullscreenAndKeyboardLock, onExit]);
 
   const handleFinalSubmit = useCallback(() => {
+    if (autoSubmitTimerRef.current) {
+      clearTimeout(autoSubmitTimerRef.current);
+      autoSubmitTimerRef.current = null;
+    }
     releaseFullscreenAndKeyboardLock();
     const submitted = examStore.submitAttempt(attempt.id);
     if (submitted) {
@@ -180,7 +191,11 @@ export const ExamEnvironment: React.FC<ExamEnvironmentProps> = ({
       });
 
       if (nextCount >= MAX_ALLOWED_VIOLATIONS) {
-        setTimeout(() => {
+        if (autoSubmitTimerRef.current) {
+          clearTimeout(autoSubmitTimerRef.current);
+        }
+        autoSubmitTimerRef.current = setTimeout(() => {
+          autoSubmitTimerRef.current = null;
           handleFinalSubmit();
         }, 2500);
       }

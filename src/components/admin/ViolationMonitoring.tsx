@@ -27,18 +27,26 @@ export const ViolationMonitoring: React.FC = () => {
   const flaggedCandidates = new Set(state.violations.map((v) => v.studentId))
     .size;
 
+  const incidentCountByKey = new Map<string, number>();
+  for (const item of state.violations) {
+    const key = `${item.studentId}::${item.examId}`;
+    incidentCountByKey.set(key, (incidentCountByKey.get(key) || 0) + 1);
+  }
+
   const filteredViolations = state.violations.filter((v) => {
     const matchesExam = examFilter === 'ALL' || v.examId === examFilter;
     const matchesType = typeFilter === 'ALL' || v.type === typeFilter;
     const q = search.trim().toLowerCase();
     const matchesSearch =
       !q ||
-      v.studentName.toLowerCase().includes(q) ||
-      v.studentRegId.toLowerCase().includes(q) ||
-      v.examTitle.toLowerCase().includes(q) ||
-      v.details.toLowerCase().includes(q);
+      (v.studentName || '').toLowerCase().includes(q) ||
+      (v.studentRegId || '').toLowerCase().includes(q) ||
+      (v.examTitle || '').toLowerCase().includes(q) ||
+      (v.details || '').toLowerCase().includes(q);
     return matchesExam && matchesType && matchesSearch;
   });
+
+  const escapeCsv = (val?: string) => `"${String(val || '').replace(/"/g, '""')}"`;
 
   const handleExportViolationsCsv = () => {
     const header =
@@ -46,7 +54,7 @@ export const ViolationMonitoring: React.FC = () => {
     const rows = filteredViolations
       .map(
         (v) =>
-          `"${v.timestamp}","${v.studentName}","${v.studentRegId}","${v.examTitle}","${v.type}","${v.details}"`
+          `${escapeCsv(v.timestamp)},${escapeCsv(v.studentName)},${escapeCsv(v.studentRegId)},${escapeCsv(v.examTitle)},${escapeCsv(v.type)},${escapeCsv(v.details)}`
       )
       .join('\n');
     const blob = new Blob([header + rows], { type: 'text/csv;charset=utf-8;' });
@@ -242,10 +250,8 @@ export const ViolationMonitoring: React.FC = () => {
             <tbody className="divide-y divide-slate-100 text-xs">
               {filteredViolations.length > 0 ? (
                 filteredViolations.map((v) => {
-                  const studentIncidentCount = state.violations.filter(
-                    (item) =>
-                      item.studentId === v.studentId && item.examId === v.examId
-                  ).length;
+                  const studentIncidentCount =
+                    incidentCountByKey.get(`${v.studentId}::${v.examId}`) || 1;
                   const risk = classifyViolationRisk(studentIncidentCount);
 
                   return (

@@ -6,12 +6,8 @@ import {
   getDeterministicQuestionOrder,
   evaluateProgrammingSubmission,
 } from '../utils/examLogic.ts';
-import {
-  fetchFirestoreSyncState,
-  pushFirestoreSyncState,
-  listenToFirestoreSyncState,
-} from './firebase.ts';
-import { UiThemeId, DEFAULT_UI_THEME, resolveUiTheme } from '../utils/uiThemes.ts';
+import { loadFirebaseModule } from './firebaseLoader.ts';
+import { UiThemeId, resolveUiTheme } from '../utils/uiThemes.ts';
 
 export const ALL_SECTIONS: string[] = Array.from({ length: 12 }, (_, i) =>
   String.fromCharCode(65 + i)
@@ -883,9 +879,9 @@ class ExamStore {
   private state: ExamStoreState;
   private listeners: Set<() => void> = new Set();
   private isApplyingRemote = false;
-  private syncTimer: ReturnType<typeof setInterval> | null = null;
-  private unsubFirestore: (() => void) | null = null;
   private lastIssuedTs = 0;
+  private syncInFlight = false;
+  private lastRemoteApiUpdatedAt = -1;
   // Server-verified Admin Bearer token held strictly in memory (never in localStorage or sessionStorage)
   private adminSessionToken: string | null = null;
 
@@ -941,32 +937,60 @@ class ExamStore {
   }
 
   private initCrossDeviceSync() {
-    // 1. Immediately pull remote state on boot. Only push back if this client already has authenticated Admin modifications
+    // 1. Immediately pull fast Express /api/state (~3ms) on boot WITHOUT waiting on Firebase SDK
     const hasLocalAdminMutations =
       this.state.isAuthenticated &&
       this.state.currentUser.role === 'admin' &&
       Number(this.state.adminUpdatedAt || 0) > 0;
-    void this.syncWithRemoteNow(hasLocalAdminMutations);
+    void this.syncWithRemoteNow(hasLocalAdminMutations, false);
 
-    // 2. Listen to real-time Cloud Firestore changes across devices
-    this.unsubFirestore = listenToFirestoreSyncState((remoteState) => {
-      this.applyRemoteState(remoteState);
-    });
+    // 2. Defer loading the ~1.6 MB Firebase SDK until after initial paint so Welcome/Auth screens open instantly
+    const startBackgroundFirestoreSync = () => {
+      void loadFirebaseModule()
+        .then((fb) => {
+          void fb.testFirestoreConnection();
+          fb.listenToFirestoreSyncState((remoteState) => {
+            this.applyRemoteState(remoteState);
+          });
+          void this.syncFirestoreInBackground();
+        })
+        .catch(() => {
+          // Gracefully operate with Express /api/state + localStorage fallback
+        });
+    };
 
-    // 3. Poll Express /api/state every 4s and on tab focus/online for rock-solid fallback
-    this.syncTimer = setInterval(() => {
-      void this.syncWithRemoteNow(false);
-    }, 4000);
+    if (typeof window !== 'undefined') {
+      const win = window as Window & {
+        requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => void;
+      };
+      if (typeof win.requestIdleCallback === 'function') {
+        win.requestIdleCallback(
+          () => {
+            globalThis.setTimeout(startBackgroundFirestoreSync, 1200);
+          },
+          { timeout: 2500 }
+        );
+      } else {
+        globalThis.setTimeout(startBackgroundFirestoreSync, 1800);
+      }
+    }
+
+    // 3. Lightweight Express /api/state poll every 15s (skips hidden tabs & unchanged timestamps)
+    setInterval(() => {
+      if (typeof document !== 'undefined' && document.hidden) return;
+      void this.syncWithRemoteNow(false, false);
+    }, 15000);
 
     window.addEventListener('focus', () => {
-      void this.syncWithRemoteNow(false);
+      void this.syncWithRemoteNow(false, false);
     });
     window.addEventListener('online', () => {
       const canPushAdmin =
         this.state.isAuthenticated &&
         this.state.currentUser.role === 'admin' &&
         Number(this.state.adminUpdatedAt || 0) > 0;
-      void this.syncWithRemoteNow(canPushAdmin);
+      void this.syncWithRemoteNow(canPushAdmin, false);
+      void this.syncFirestoreInBackground();
     });
     window.addEventListener('storage', (e) => {
       if (e.key === STORAGE_KEY && e.newValue) {
@@ -978,6 +1002,49 @@ class ExamStore {
         }
       }
     });
+  }
+
+  private async syncFirestoreInBackground(): Promise<void> {
+    if (typeof window === 'undefined') return;
+    try {
+      const fb = await loadFirebaseModule();
+      const firestoreRes = await fb.fetchFirestoreSyncState().catch(() => null);
+      if (!firestoreRes?.state || typeof firestoreRes.state !== 'object') return;
+
+      const hasRemoteData =
+        Number(firestoreRes.state.adminUpdatedAt || 0) > 0 ||
+        (Array.isArray(firestoreRes.state.students) && firestoreRes.state.students.length > 0) ||
+        (Array.isArray(firestoreRes.state.subjects) && firestoreRes.state.subjects.length > 0) ||
+        (Array.isArray(firestoreRes.state.exams) && firestoreRes.state.exams.length > 0) ||
+        (Array.isArray(firestoreRes.state.deletedIds) && firestoreRes.state.deletedIds.length > 0);
+
+      if (hasRemoteData) {
+        this.applyRemoteState(firestoreRes.state);
+        const firestoreHasLegacyPurged =
+          Array.isArray(firestoreRes.state.questions) &&
+          firestoreRes.state.questions.some((q: any) =>
+            LEGACY_PURGED_QUESTION_IDS.has(String(q?.id || ''))
+          );
+        const firestoreHasOversizedLogo =
+          typeof firestoreRes.state.settings?.collegeLogoUrl === 'string' &&
+          firestoreRes.state.settings.collegeLogoUrl.startsWith('data:image/') &&
+          firestoreRes.state.settings.collegeLogoUrl.length > 2048;
+        const localHasCompactLogo =
+          typeof this.state.settings.collegeLogoUrl === 'string' &&
+          !this.state.settings.collegeLogoUrl.startsWith('data:image/');
+        const firestoreAdminTs = Number(firestoreRes.state.adminUpdatedAt || 0);
+        const localAdminTs = Number(this.state.adminUpdatedAt || 0);
+        if (
+          firestoreHasLegacyPurged ||
+          (firestoreHasOversizedLogo && localHasCompactLogo) ||
+          (localAdminTs > firestoreAdminTs && firestoreAdminTs > 0)
+        ) {
+          void fb.pushFirestoreSyncState(this.getSharedPayload()).catch(() => false);
+        }
+      }
+    } catch {
+      // ignore background Firestore errors
+    }
   }
 
   private applyRemoteState(remoteState: Partial<ExamStoreState>) {
@@ -1063,57 +1130,59 @@ class ExamStore {
     }
   }
 
-  public async syncWithRemoteNow(pushBackIfLocalHasData = false): Promise<void> {
+  public async syncWithRemoteNow(
+    pushBackIfLocalHasData = false,
+    includeFirestoreFetch = false
+  ): Promise<void> {
     if (typeof window === 'undefined') return;
+    if (this.syncInFlight && !pushBackIfLocalHasData) return;
+    this.syncInFlight = true;
     try {
-      const [firestoreRes, apiRes] = await Promise.all([
-        fetchFirestoreSyncState().catch(() => null),
-        fetch('/api/state', {
-          method: 'GET',
-          headers: { Accept: 'application/json' },
-          cache: 'no-store',
-        })
-          .then((r) => (r.ok ? r.json() : null))
-          .catch(() => null),
-      ]);
+      // Always fetch fast Express /api/state (~3ms) immediately without blocking on Firestore
+      const apiRes = await fetch('/api/state', {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+        cache: 'no-store',
+      })
+        .then((r) => (r.ok ? r.json() : null))
+        .catch(() => null);
 
-      let combinedRemote: Partial<ExamStoreState> = {};
-      if (apiRes?.state && typeof apiRes.state === 'object') {
-        combinedRemote = mergeSharedPlatformState(combinedRemote, apiRes.state);
-      }
-      if (firestoreRes?.state && typeof firestoreRes.state === 'object') {
-        combinedRemote = mergeSharedPlatformState(
-          combinedRemote,
-          firestoreRes.state
-        );
-      }
-
-      const hasRemoteData =
-        Number(combinedRemote.adminUpdatedAt || 0) > 0 ||
-        (combinedRemote.students && combinedRemote.students.length > 0) ||
-        (combinedRemote.subjects && combinedRemote.subjects.length > 0) ||
-        (combinedRemote.exams && combinedRemote.exams.length > 0) ||
-        (combinedRemote.deletedIds && combinedRemote.deletedIds.length > 0);
-
-      if (hasRemoteData) {
-        this.applyRemoteState(combinedRemote);
-        const firestoreHasLegacyPurged =
-          Array.isArray(firestoreRes?.state?.questions) &&
-          firestoreRes.state.questions.some((q: any) =>
-            LEGACY_PURGED_QUESTION_IDS.has(String(q?.id || ''))
-          );
-        const firestoreAdminTs = Number(firestoreRes?.state?.adminUpdatedAt || 0);
-        const localAdminTs = Number(this.state.adminUpdatedAt || 0);
-        if (firestoreHasLegacyPurged || (localAdminTs > firestoreAdminTs && firestoreAdminTs > 0)) {
-          void pushFirestoreSyncState(this.getSharedPayload()).catch(() => false);
-        }
-      } else if (
-        this.state.isAuthenticated &&
-        this.state.currentUser.role === 'admin'
+      const apiUpdatedAt = Number(apiRes?.updatedAt || 0);
+      if (
+        !pushBackIfLocalHasData &&
+        apiUpdatedAt > 0 &&
+        apiUpdatedAt === this.lastRemoteApiUpdatedAt
       ) {
-        // If remote is completely empty and Admin is logged in, seed remote with Admin's state
-        await this.pushStateToRemote('admin');
+        if (includeFirestoreFetch) {
+          void this.syncFirestoreInBackground();
+        }
         return;
+      }
+      if (apiUpdatedAt > 0) {
+        this.lastRemoteApiUpdatedAt = apiUpdatedAt;
+      }
+
+      if (apiRes?.state && typeof apiRes.state === 'object') {
+        const hasRemoteData =
+          Number(apiRes.state.adminUpdatedAt || 0) > 0 ||
+          (Array.isArray(apiRes.state.students) && apiRes.state.students.length > 0) ||
+          (Array.isArray(apiRes.state.subjects) && apiRes.state.subjects.length > 0) ||
+          (Array.isArray(apiRes.state.exams) && apiRes.state.exams.length > 0) ||
+          (Array.isArray(apiRes.state.deletedIds) && apiRes.state.deletedIds.length > 0);
+
+        if (hasRemoteData) {
+          this.applyRemoteState(apiRes.state);
+        } else if (
+          this.state.isAuthenticated &&
+          this.state.currentUser.role === 'admin'
+        ) {
+          await this.pushStateToRemote('admin');
+          return;
+        }
+      }
+
+      if (includeFirestoreFetch) {
+        void this.syncFirestoreInBackground();
       }
 
       if (pushBackIfLocalHasData) {
@@ -1126,6 +1195,8 @@ class ExamStore {
       }
     } catch {
       // ignore offline sync errors
+    } finally {
+      this.syncInFlight = false;
     }
   }
 
@@ -1167,8 +1238,15 @@ class ExamStore {
         }
 
         const apiRes = apiRaw && apiRaw.ok ? await apiRaw.json().catch(() => null) : null;
-        void pushFirestoreSyncState(shared).catch(() => false);
+        const stateForFirestore =
+          apiRes?.state && typeof apiRes.state === 'object' ? apiRes.state : shared;
+        void loadFirebaseModule()
+          .then((fb) => fb.pushFirestoreSyncState(stateForFirestore))
+          .catch(() => false);
         if (apiRes?.state && typeof apiRes.state === 'object') {
+          if (apiRes.updatedAt) {
+            this.lastRemoteApiUpdatedAt = Number(apiRes.updatedAt);
+          }
           this.applyRemoteState(apiRes.state);
         }
       } else {
@@ -1191,8 +1269,13 @@ class ExamStore {
           .catch(() => null);
 
         if (apiRes?.state && typeof apiRes.state === 'object') {
+          if (apiRes.updatedAt) {
+            this.lastRemoteApiUpdatedAt = Number(apiRes.updatedAt);
+          }
           this.applyRemoteState(apiRes.state);
-          await pushFirestoreSyncState(apiRes.state).catch(() => false);
+          void loadFirebaseModule()
+            .then((fb) => fb.pushFirestoreSyncState(apiRes.state))
+            .catch(() => false);
         }
       }
     } catch {

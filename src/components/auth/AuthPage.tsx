@@ -17,11 +17,39 @@ import {
   Trophy,
   KeyRound,
   RefreshCw,
+  X,
 } from 'lucide-react';
 import { examStore } from '../../services/examStore.ts';
-import { googleSignIn } from '../../services/firebase.ts';
+import {
+  getLoadedFirebaseModule,
+  loadFirebaseModule,
+  preloadFirebaseModule,
+} from '../../services/firebaseLoader.ts';
 import { InstitutionalHeaderBrand } from '../common/InstitutionalHeaderBrand.tsx';
 import { GlobalFooter } from '../common/GlobalFooter.tsx';
+
+function suggestCorrectedEmail(rawEmail: string): string | null {
+  const clean = rawEmail.trim().toLowerCase();
+  const match = clean.match(/^([^@\s]+)@([a-z0-9.-]+)$/);
+  if (!match) return null;
+  const [, local, domain] = match;
+  const gmailTypos = new Set([
+    'gmai.com',
+    'gmial.com',
+    'gmal.com',
+    'gamil.com',
+    'gmali.com',
+    'gmail.co',
+    'gmail.con',
+    'gmail.cm',
+    'gmail.om',
+    'gnail.com',
+  ]);
+  if (gmailTypos.has(domain)) {
+    return `${local}@gmail.com`;
+  }
+  return null;
+}
 
 interface AuthPageProps {
   initialRole?: 'admin' | 'student';
@@ -73,18 +101,38 @@ export const AuthPage: React.FC<AuthPageProps> = ({
   const [sendingEmail, setSendingEmail] = useState<boolean>(false);
   const [resendCooldown, setResendCooldown] = useState<number>(0);
 
+  // Sync role and clear stale messages when initialRole prop changes
+  useEffect(() => {
+    setRole(initialRole);
+    setError(null);
+    setOtpSuccessMsg(null);
+    setForgotStep('none');
+  }, [initialRole]);
+
+  // Preload Firebase Auth asynchronously ONLY when entering Forgot Password flow
+  useEffect(() => {
+    if (forgotStep === 'request' || forgotStep === 'verify') {
+      preloadFirebaseModule();
+    }
+  }, [forgotStep]);
+
   // Fetch server Admin auth status on mount
   useEffect(() => {
     let active = true;
-    examStore.fetchAdminAuthStatus().then((status) => {
-      if (!active) return;
-      setNeedsInitialSetup(status.needsInitialSetup);
-      setSmtpConfigured(status.smtpConfigured);
-      setMaskedAdminEmail(status.maskedRecoveryEmail);
-      if (status.cooldownSecondsRemaining > 0) {
-        setResendCooldown(status.cooldownSecondsRemaining);
-      }
-    });
+    examStore
+      .fetchAdminAuthStatus()
+      .then((status) => {
+        if (!active) return;
+        setNeedsInitialSetup(status.needsInitialSetup);
+        setSmtpConfigured(status.smtpConfigured);
+        setMaskedAdminEmail(status.maskedRecoveryEmail);
+        if (status.cooldownSecondsRemaining > 0) {
+          setResendCooldown(status.cooldownSecondsRemaining);
+        }
+      })
+      .catch(() => {
+        // Keep safe defaults if status request fails transiently
+      });
     return () => {
       active = false;
     };
@@ -98,14 +146,15 @@ export const AuthPage: React.FC<AuthPageProps> = ({
     }
   }, [activeSettingsAdminEmail]);
 
-  // 60-second resend countdown timer
+  // 60-second resend countdown timer (single clean interval while active)
+  const isResendCoolingDown = resendCooldown > 0;
   useEffect(() => {
-    if (resendCooldown <= 0) return;
+    if (!isResendCoolingDown) return;
     const timer = window.setInterval(() => {
       setResendCooldown((prev) => (prev > 1 ? prev - 1 : 0));
     }, 1000);
     return () => window.clearInterval(timer);
-  }, [resendCooldown]);
+  }, [isResendCoolingDown]);
 
   const handleRoleSwitch = (nextRole: 'admin' | 'student') => {
     setRole(nextRole);
@@ -143,6 +192,8 @@ export const AuthPage: React.FC<AuthPageProps> = ({
       setSetupPassword('');
       setSetupConfirmPassword('');
       onSuccess('admin');
+    } catch {
+      setError('Unable to complete setup right now. Please try again.');
     } finally {
       setIsSubmitting(false);
     }
@@ -151,6 +202,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
+    setOtpSuccessMsg(null);
 
     if (!identifier.trim()) {
       setError(
@@ -174,6 +226,8 @@ export const AuthPage: React.FC<AuthPageProps> = ({
         return;
       }
       onSuccess(role);
+    } catch {
+      setError('Unable to sign in right now. Please check your connection and try again.');
     } finally {
       setIsSubmitting(false);
     }
@@ -181,6 +235,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
 
   const handleOpenForgot = () => {
     if (role !== 'admin') return;
+    preloadFirebaseModule();
     setForgotStep('request');
     setRecoveryEmailInput(activeSettingsAdminEmail);
     setEnteredOtp('');
@@ -197,6 +252,14 @@ export const AuthPage: React.FC<AuthPageProps> = ({
     const cleanEmail = recoveryEmailInput.trim();
     if (!cleanEmail || !cleanEmail.includes('@')) {
       setError('Please enter your authorized Administrator email address.');
+      return;
+    }
+    const typoSuggestion = suggestCorrectedEmail(cleanEmail);
+    if (typoSuggestion) {
+      setRecoveryEmailInput(typoSuggestion);
+      setError(
+        `We corrected the email spelling to ${typoSuggestion}. Click "Send 6-Digit Code to Inbox" again to send.`
+      );
       return;
     }
 
@@ -219,6 +282,8 @@ export const AuthPage: React.FC<AuthPageProps> = ({
           res.maskedEmail || maskedAdminEmail
         }. Please check your email inbox (valid for ${res.expiresInMinutes || 10} minutes).`
       );
+    } catch {
+      setError('Could not reach the email verification service. Please try again.');
     } finally {
       setSendingEmail(false);
     }
@@ -232,11 +297,19 @@ export const AuthPage: React.FC<AuthPageProps> = ({
       setError('Please enter your authorized Administrator email address first.');
       return;
     }
+    const typoSuggestion = suggestCorrectedEmail(cleanEmail);
+    const targetEmail = typoSuggestion || cleanEmail;
+    if (typoSuggestion) {
+      setRecoveryEmailInput(typoSuggestion);
+    }
 
     setSendingEmail(true);
     try {
-      // Trigger Google sign-in popup immediately inside click gesture
-      const signInResult = await googleSignIn();
+      // Use already-preloaded Firebase module synchronously inside click gesture to avoid popup blockers
+      const loadedFb = getLoadedFirebaseModule();
+      const signInResult = loadedFb
+        ? await loadedFb.googleSignIn()
+        : await (await loadFirebaseModule()).googleSignIn();
       if (!signInResult?.accessToken) {
         setError(
           'Google account verification was cancelled or did not return Gmail permission.'
@@ -245,7 +318,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
       }
 
       const res = await examStore.requestAdminOtpViaVerifiedGoogle(
-        cleanEmail,
+        targetEmail,
         signInResult.accessToken
       );
       if (!res.success) {
@@ -266,19 +339,29 @@ export const AuthPage: React.FC<AuthPageProps> = ({
         }. Open your Gmail inbox and enter the code below.`
       );
     } catch (err: any) {
+      const code = err?.code;
       if (
-        err?.code === 'auth/popup-closed-by-user' ||
-        err?.code === 'auth/cancelled-popup-request'
+        code === 'auth/popup-closed-by-user' ||
+        code === 'auth/cancelled-popup-request'
       ) {
-        setError('Google sign-in window was closed before verification completed. Click again when ready.');
-      } else if (err?.code === 'auth/popup-blocked') {
+        setError(
+          'Google sign-in window was closed before verification completed. Click again when ready.'
+        );
+      } else if (code === 'auth/popup-blocked') {
         setError(
           'Browser blocked the Google sign-in popup. Please allow popups for this site and click again.'
         );
+      } else if (code === 'auth/unauthorized-domain') {
+        setError(
+          'This preview domain is not authorized for Google popups. Use the "Send 6-Digit Code to Inbox" button above instead.'
+        );
+      } else if (code === 'auth/network-request-failed') {
+        setError(
+          'Network error while connecting to Google sign-in. Please check your internet connection and retry.'
+        );
       } else {
         setError(
-          err?.message ||
-            'Unable to verify Google account. Only the authorized Administrator email can request a reset code.'
+          'Unable to verify Google account. Only the authorized Administrator email can request a reset code.'
         );
       }
     } finally {
@@ -322,6 +405,8 @@ export const AuthPage: React.FC<AuthPageProps> = ({
       setOtpSuccessMsg(
         'Administrator password has been updated securely! Please sign in with your new password.'
       );
+    } catch {
+      setError('Could not verify your reset code right now. Please try again.');
     } finally {
       setIsSubmitting(false);
     }
@@ -329,14 +414,17 @@ export const AuthPage: React.FC<AuthPageProps> = ({
 
   return (
     <div className="min-h-screen bg-[#06071B] text-white flex flex-col justify-between relative overflow-x-hidden">
-      {/* Ambient Cosmic Nebulae */}
-      <div className="pointer-events-none fixed inset-0 overflow-hidden z-0">
-        <div className="absolute -top-28 left-1/4 w-96 h-96 rounded-full bg-purple-600/25 blur-[120px]" />
-        <div className="absolute bottom-0 right-1/4 w-96 h-96 rounded-full bg-cyan-500/20 blur-[120px]" />
-      </div>
+      {/* Ambient Cosmic Nebulae (GPU-friendly radial gradients) */}
+      <div
+        className="pointer-events-none fixed inset-0 overflow-hidden z-0"
+        style={{
+          backgroundImage:
+            'radial-gradient(circle 420px at 30% 10%, rgba(147, 51, 234, 0.24), transparent 70%), radial-gradient(circle 420px at 74% 88%, rgba(6, 182, 212, 0.18), transparent 70%)',
+        }}
+      />
 
       <div className="flex-1 flex items-center justify-center p-4 sm:p-8 relative z-10">
-        <div className="w-full max-w-[1440px] grid grid-cols-1 lg:grid-cols-12 rounded-3xl overflow-hidden shadow-[0_25px_70px_rgba(4,5,20,0.9)] border border-purple-500/35 bg-[#0B0E2B]/90 backdrop-blur-xl">
+        <div className="w-full max-w-[1440px] grid grid-cols-1 lg:grid-cols-12 rounded-3xl overflow-hidden shadow-[0_25px_70px_rgba(4,5,20,0.9)] border border-purple-500/35 bg-[#0B0E2B]">
           {/* Left Branding & Cosmic Showcase Column */}
           <div className="lg:col-span-6 p-6 sm:p-10 text-white flex flex-col justify-between relative overflow-hidden bg-gradient-to-br from-[#0A0D2E] via-[#131147] to-[#1E145E] border-b lg:border-b-0 lg:border-r border-purple-500/25">
             <div>
@@ -400,7 +488,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
 
             {/* Security Notice Footer */}
             <div className="mt-10 pt-6 border-t border-purple-400/20">
-              <div className="bg-[#0B0E2B]/70 backdrop-blur-md rounded-2xl p-4 border border-purple-400/30 flex items-center gap-3">
+              <div className="bg-[#0B0E2B]/90 rounded-2xl p-4 border border-purple-400/30 flex items-center gap-3">
                 <ShieldCheck className="w-5 h-5 text-cyan-400 shrink-0" />
                 <div className="text-xs text-slate-300 leading-relaxed">
                   <strong className="text-white">
@@ -484,16 +572,36 @@ export const AuthPage: React.FC<AuthPageProps> = ({
               </div>
 
               {error && (
-                <div className="mt-5 p-3.5 rounded-xl bg-red-500/15 border border-red-500/40 text-red-300 text-xs font-medium flex items-start gap-2.5">
-                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-red-400" />
-                  <span>{error}</span>
+                <div className="mt-5 p-3.5 rounded-xl bg-red-500/15 border border-red-500/40 text-red-200 text-xs font-medium flex items-start justify-between gap-2.5">
+                  <div className="flex items-start gap-2.5">
+                    <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-red-400" />
+                    <span>{error}</span>
+                  </div>
+                  <button
+                    type="button"
+                    aria-label="Dismiss error"
+                    onClick={() => setError(null)}
+                    className="text-red-300/80 hover:text-white p-0.5 rounded cursor-pointer shrink-0"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
                 </div>
               )}
 
               {otpSuccessMsg && (
-                <div className="mt-5 p-3.5 rounded-xl bg-emerald-500/15 border border-emerald-500/40 text-emerald-300 text-xs font-medium flex items-start gap-2.5">
-                  <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-emerald-400" />
-                  <span>{otpSuccessMsg}</span>
+                <div className="mt-5 p-3.5 rounded-xl bg-emerald-500/15 border border-emerald-500/40 text-emerald-200 text-xs font-medium flex items-start justify-between gap-2.5">
+                  <div className="flex items-start gap-2.5">
+                    <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-emerald-400" />
+                    <span>{otpSuccessMsg}</span>
+                  </div>
+                  <button
+                    type="button"
+                    aria-label="Dismiss notice"
+                    onClick={() => setOtpSuccessMsg(null)}
+                    className="text-emerald-300/80 hover:text-white p-0.5 rounded cursor-pointer shrink-0"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
                 </div>
               )}
 
@@ -594,7 +702,10 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                         id="auth-identifier"
                         type="text"
                         value={identifier}
-                        onChange={(e) => setIdentifier(e.target.value)}
+                        onChange={(e) => {
+                          setIdentifier(e.target.value);
+                          if (error) setError(null);
+                        }}
                         placeholder={
                           role === 'admin'
                             ? 'admin or your Admin Settings email'
@@ -619,7 +730,10 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                         id="auth-password"
                         type={showPassword ? 'text' : 'password'}
                         value={password}
-                        onChange={(e) => setPassword(e.target.value)}
+                        onChange={(e) => {
+                          setPassword(e.target.value);
+                          if (error) setError(null);
+                        }}
                         placeholder={
                           role === 'admin'
                             ? 'Enter Administrator password'
@@ -720,7 +834,10 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                         type="email"
                         required
                         value={recoveryEmailInput}
-                        onChange={(e) => setRecoveryEmailInput(e.target.value)}
+                        onChange={(e) => {
+                          setRecoveryEmailInput(e.target.value);
+                          if (error) setError(null);
+                        }}
                         placeholder="Enter your authorized Admin Settings email"
                         className="w-full pl-10 pr-4 py-3 rounded-xl border border-purple-500/35 bg-[#131742] text-sm text-white placeholder:text-slate-500 focus:border-purple-400 focus:outline-none"
                       />

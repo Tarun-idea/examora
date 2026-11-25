@@ -1,10 +1,8 @@
 import React, { useState } from 'react';
 import {
   Users,
-  BookOpen,
   CheckCircle2,
   Calendar,
-  TrendingUp,
   Zap,
   Plus,
   BarChart3,
@@ -454,7 +452,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <div className="flex justify-between text-[11px] text-slate-400 font-mono mt-1 px-2">
               {orderedAttempts.length > 0 ? (
                 chartValues.map((val, idx) => (
-                  <span key={idx}>
+                  <span key={`pt-${timeframe}-${idx}`}>
                     {timeframe === '1y' ? `P${idx + 1}` : `#${idx + 1}`} ({val}%)
                   </span>
                 ))

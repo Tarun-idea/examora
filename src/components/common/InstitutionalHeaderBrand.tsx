@@ -27,6 +27,7 @@ export const InstitutionalHeaderBrand: React.FC<InstitutionalHeaderBrandProps> =
         <img
           src={effectiveLogo}
           alt="Panimalar Engineering College Emblem"
+          decoding="async"
           onError={(e) => {
             const target = e.currentTarget;
             if (!target.src.endsWith('/assets/panimalar-crest.png')) {

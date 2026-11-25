@@ -62,7 +62,12 @@ export const StudentResultsView: React.FC<StudentResultsViewProps> = ({
               : attempt.percentage >= 70
               ? 'B+ (Merit)'
               : 'B (Pass)',
-          issuedAt: (attempt.publishedAt || attempt.submittedAt || attempt.startedAt).split('T')[0],
+          issuedAt: (
+            attempt.publishedAt ||
+            attempt.submittedAt ||
+            attempt.startedAt ||
+            new Date().toISOString()
+          ).split('T')[0],
           publishedToStudent: true,
           customRemarks:
             'Awarded for passing the proctored examination with verified distinction.',
@@ -141,6 +146,24 @@ export const StudentResultsView: React.FC<StudentResultsViewProps> = ({
   const certTheme =
     accentPaletteMap[tpl.accentTheme] || accentPaletteMap.emerald;
 
+  const certQrKey = certificate
+    ? [
+        certificate.certificateNumber,
+        certificate.studentName,
+        certificate.studentRegId,
+        certificate.section || studentSection,
+        certificate.examTitle,
+        certificate.subjectName,
+        certificate.score,
+        certificate.maxScore,
+        certificate.percentage,
+        certificate.grade,
+        certificate.issuedAt,
+        certificate.verifiedAt || '',
+        tpl.institutionName,
+      ].join('|')
+    : '';
+
   useEffect(() => {
     let active = true;
     if (certificate) {
@@ -167,7 +190,7 @@ export const StudentResultsView: React.FC<StudentResultsViewProps> = ({
     return () => {
       active = false;
     };
-  }, [certificate, studentSection, tpl.institutionName]);
+  }, [certQrKey]);
 
   if (!attempt) {
     return (

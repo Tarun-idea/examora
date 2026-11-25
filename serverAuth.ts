@@ -168,11 +168,9 @@ export class ServerAdminAuthService {
     if (!this.stored) return;
     try {
       this.ensureParentDir();
-      fs.writeFileSync(
-        this.authFilePath,
-        JSON.stringify(this.stored, null, 2),
-        'utf8'
-      );
+      const tmpPath = `${this.authFilePath}.${process.pid}.${Date.now()}.tmp`;
+      fs.writeFileSync(tmpPath, JSON.stringify(this.stored, null, 2), 'utf8');
+      fs.renameSync(tmpPath, this.authFilePath);
     } catch {
       // ignore fs errors on read-only mounts
     }
@@ -595,34 +593,61 @@ export class ServerAdminAuthService {
     }
 
     try {
-      const rawHost = (process.env.SMTP_HOST || 'smtp.gmail.com')
-        .trim()
+      const stripQuotes = (val?: string) =>
+        String(val || '')
+          .trim()
+          .replace(/^['"]+|['"]+$/g, '')
+          .trim();
+
+      const rawHost = stripQuotes(process.env.SMTP_HOST || 'smtp.gmail.com')
         .replace(/^https?:\/\//i, '')
         .replace(/\/.*$/, '')
+        .replace(/:\d+$/, '')
         .replace(/^smtp@/i, 'smtp.');
       const host = rawHost || 'smtp.gmail.com';
-      const parsedPort = Number(process.env.SMTP_PORT || 465);
+      const parsedPort = Number(stripQuotes(process.env.SMTP_PORT || '465'));
       const port = Number.isFinite(parsedPort) && parsedPort > 0 ? parsedPort : 465;
-      const user = (process.env.SMTP_USER || '').trim();
-      const rawPass = (process.env.SMTP_PASS || '').trim();
+      const user = stripQuotes(process.env.SMTP_USER);
+      const rawPass = stripQuotes(process.env.SMTP_PASS);
       const pass = host.toLowerCase().includes('gmail')
         ? rawPass.replace(/\s+/g, '')
         : rawPass;
-      const from = (process.env.SMTP_FROM || user).trim();
+      const from = stripQuotes(process.env.SMTP_FROM) || user;
 
-      const transporter = nodemailer.createTransport({
-        host,
-        port,
-        secure: port === 465,
-        auth: { user, pass },
-      });
-
-      await transporter.sendMail({
+      const mailOptions = {
         from: `"ExamFlow Security" <${from}>`,
         to: cleanEmail,
         subject: 'ExamFlow Admin Password Reset Verification Code',
         html: buildOtpEmailHtml(cleanEmail, issued.rawOtp),
-      });
+      };
+
+      const sendWithPort = async (targetPort: number) => {
+        const transporter = nodemailer.createTransport({
+          host,
+          port: targetPort,
+          secure: targetPort === 465,
+          requireTLS: targetPort === 587,
+          auth: { user, pass },
+          connectionTimeout: 8000,
+          greetingTimeout: 8000,
+          socketTimeout: 10000,
+        });
+        await transporter.sendMail(mailOptions);
+      };
+
+      try {
+        await sendWithPort(port);
+      } catch (primaryErr: any) {
+        const isConnErr =
+          primaryErr?.code === 'ETIMEDOUT' ||
+          primaryErr?.code === 'ECONNECTION' ||
+          primaryErr?.code === 'ESOCKET';
+        if (isConnErr && host.toLowerCase().includes('gmail') && port === 465) {
+          await sendWithPort(587);
+        } else {
+          throw primaryErr;
+        }
+      }
 
       return {
         ok: true,
@@ -647,9 +672,13 @@ export class ServerAdminAuthService {
       ) {
         friendlyError =
           'Gmail rejected SMTP_USER / SMTP_PASS. Make sure SMTP_PASS is a 16-character Google App Password (not your regular Gmail password), or use the Google-Verified Admin button below.';
-      } else if (err?.code === 'ETIMEDOUT' || err?.code === 'ECONNECTION') {
+      } else if (
+        err?.code === 'ETIMEDOUT' ||
+        err?.code === 'ECONNECTION' ||
+        err?.code === 'ESOCKET'
+      ) {
         friendlyError =
-          'Could not connect to the SMTP server. Check SMTP_HOST (smtp.gmail.com) and SMTP_PORT (465 or 587), or use the Google-Verified Admin button below.';
+          'Could not connect to the SMTP server within 8 seconds. Check SMTP_HOST (smtp.gmail.com) and SMTP_PORT (465 or 587), or use the Google-Verified Admin button below.';
       }
       return {
         ok: false,
@@ -901,8 +930,9 @@ export class ServerAdminAuthService {
     };
     this.saveToDisk();
 
-    // One-time use: clear OTP and revoke all existing Admin sessions immediately
+    // One-time use: clear OTP, reset login rate-limits, and revoke all existing Admin sessions immediately
     this.activeOtp = null;
+    this.loginFailures.clear();
     this.revokeAllSessions();
     return { ok: true };
   }

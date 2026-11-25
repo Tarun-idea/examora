@@ -1,6 +1,9 @@
 import 'dotenv/config';
+import compression from 'compression';
+import crypto from 'crypto';
 import express from 'express';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
@@ -9,9 +12,15 @@ import { ServerAdminAuthService } from './serverAuth.ts';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const DATA_DIR = path.join(__dirname, 'data');
+// Keep live-mutated runtime state & admin auth hashes outside the tracked source workspace
+// so the IDE file watcher never conflicts with runtime server writes or exposes auth hashes.
+const DATA_DIR =
+  process.env.EXAMFLOW_DATA_DIR || path.join(os.tmpdir(), 'examflow-runtime-data');
+const DATA_ASSETS_DIR = path.join(DATA_DIR, 'assets');
+const PUBLIC_ASSETS_DIR = path.join(__dirname, 'public', 'assets');
 const STATE_FILE = path.join(DATA_DIR, 'examflow_shared_state.json');
 const adminAuth = new ServerAdminAuthService(DATA_DIR);
+let lastPersistedStateJson = '';
 
 interface SharedSyncPayload {
   updatedAt: number;
@@ -23,8 +32,81 @@ function ensureDataDir() {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true });
     }
+    if (!fs.existsSync(DATA_ASSETS_DIR)) {
+      fs.mkdirSync(DATA_ASSETS_DIR, { recursive: true });
+    }
   } catch {
     // ignore fs errors on read-only mounts
+  }
+}
+
+function writeFileAtomic(filePath: string, content: string | Buffer) {
+  ensureDataDir();
+  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmpPath, content);
+  fs.renameSync(tmpPath, filePath);
+}
+
+const IMAGE_MIME_TO_EXT: Record<string, string> = {
+  png: 'png',
+  jpeg: 'jpg',
+  jpg: 'jpg',
+  webp: 'webp',
+  gif: 'gif',
+  'svg+xml': 'svg',
+};
+
+const ASSET_EXT_TO_MIME: Record<string, string> = {
+  png: 'image/png',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  webp: 'image/webp',
+  gif: 'image/gif',
+  svg: 'image/svg+xml',
+};
+
+/**
+ * Extracts oversized inline base64 data:image/... strings into real binary image files
+ * under data/assets/ so examflow_shared_state.json stays compact, fast, and easy to inspect/download.
+ */
+function externalizeInlineImageDataUrl(rawUrl?: string): {
+  url: string;
+  migrated: boolean;
+} {
+  if (!rawUrl || typeof rawUrl !== 'string') {
+    return { url: rawUrl || '', migrated: false };
+  }
+  const trimmed = rawUrl.trim();
+  if (!trimmed.startsWith('data:image/') || trimmed.length <= 2048) {
+    return { url: trimmed, migrated: false };
+  }
+  const match = trimmed.match(
+    /^data:image\/(png|jpeg|jpg|webp|gif|svg\+xml);base64,([A-Za-z0-9+/=\s]+)$/i
+  );
+  if (!match) {
+    return { url: trimmed, migrated: false };
+  }
+  const mimeSub = match[1].toLowerCase();
+  const ext = IMAGE_MIME_TO_EXT[mimeSub];
+  if (!ext) {
+    return { url: trimmed, migrated: false };
+  }
+  try {
+    const cleanB64 = match[2].replace(/\s+/g, '');
+    const buffer = Buffer.from(cleanB64, 'base64');
+    if (buffer.length === 0 || buffer.length > 5 * 1024 * 1024) {
+      return { url: trimmed, migrated: false };
+    }
+    const hash = crypto.createHash('sha256').update(buffer).digest('hex').slice(0, 12);
+    const filename = `college-logo-${hash}.${ext}`;
+    const destPath = path.join(DATA_ASSETS_DIR, filename);
+    ensureDataDir();
+    if (!fs.existsSync(destPath)) {
+      writeFileAtomic(destPath, buffer);
+    }
+    return { url: `/api/assets/${filename}`, migrated: true };
+  } catch {
+    return { url: trimmed, migrated: false };
   }
 }
 
@@ -213,11 +295,25 @@ function sanitizeServerStateCollections(stateObj: Record<string, any>): Record<s
       };
     });
   }
-  // Never persist or return plaintext Admin passwords in shared state
+  // Never persist or return plaintext Admin passwords in shared state,
+  // and extract oversized inline base64 logos into real image files under data/assets/
   if (stateObj.settings && typeof stateObj.settings === 'object') {
     if ('adminPassword' in stateObj.settings) {
       const { adminPassword: _removed, ...safeSettings } = stateObj.settings;
       stateObj.settings = safeSettings;
+    }
+    if (typeof stateObj.settings.collegeLogoUrl === 'string') {
+      const extRes = externalizeInlineImageDataUrl(stateObj.settings.collegeLogoUrl);
+      if (extRes.migrated) {
+        stateObj.settings = {
+          ...stateObj.settings,
+          collegeLogoUrl: extRes.url,
+        };
+        stateObj.settingsUpdatedAt = Math.max(
+          Date.now(),
+          Number(stateObj.settingsUpdatedAt || 0) + 1
+        );
+      }
     }
   }
   return stateObj;
@@ -237,10 +333,18 @@ function loadServerState(): SharedSyncPayload {
         const hadPlaintextPass = Boolean(
           parsed.state?.settings && 'adminPassword' in parsed.state.settings
         );
+        const hadOversizedInlineLogo =
+          typeof parsed.state?.settings?.collegeLogoUrl === 'string' &&
+          parsed.state.settings.collegeLogoUrl.startsWith('data:image/') &&
+          parsed.state.settings.collegeLogoUrl.length > 2048;
+
         parsed.state = sanitizeServerStateCollections(parsed.state);
-        if (hadPlaintextPass) {
+        const serializedState = JSON.stringify(parsed.state);
+        lastPersistedStateJson = serializedState;
+
+        if (hadPlaintextPass || hadOversizedInlineLogo) {
           try {
-            fs.writeFileSync(STATE_FILE, JSON.stringify(parsed, null, 2), 'utf-8');
+            writeFileAtomic(STATE_FILE, JSON.stringify(parsed, null, 2));
           } catch {
             // ignore write errors
           }
@@ -261,10 +365,14 @@ let memoryStore: SharedSyncPayload = loadServerState();
 
 function saveServerState(payload: SharedSyncPayload) {
   payload.state = sanitizeServerStateCollections(payload.state);
+  const nextStateJson = JSON.stringify(payload.state);
   memoryStore = payload;
+  if (nextStateJson === lastPersistedStateJson && fs.existsSync(STATE_FILE)) {
+    return;
+  }
   try {
-    ensureDataDir();
-    fs.writeFileSync(STATE_FILE, JSON.stringify(payload, null, 2), 'utf-8');
+    writeFileAtomic(STATE_FILE, JSON.stringify(payload, null, 2));
+    lastPersistedStateJson = nextStateJson;
   } catch {
     // ignore write errors if ephemeral filesystem
   }
@@ -568,6 +676,7 @@ function mergeServerStates(
 
 async function startServer() {
   const app = express();
+  app.use(compression({ threshold: 1024 }));
   app.use(express.json({ limit: '30mb' }));
 
   // PDF Question Paper Text Extraction API using Mozilla pdfjs-dist
@@ -846,7 +955,51 @@ async function startServer() {
     res.json({ ok: true });
   });
 
-  // Health & Live Shared State API for Cross-Device Student Login & Exam Sync
+  // Serve extracted institution logo/asset images safely with strict filename allowlist
+  app.get('/api/assets/:filename', (req, res) => {
+    const filename = String(req.params.filename || '').trim();
+    const match = filename.match(/^[a-zA-Z0-9_-]+\.(png|jpe?g|webp|gif|svg)$/i);
+    if (!match) {
+      res.status(400).json({ error: 'Invalid asset filename' });
+      return;
+    }
+    const ext = match[1].toLowerCase();
+    const mimeType = ASSET_EXT_TO_MIME[ext] || 'application/octet-stream';
+    const dataCandidate = path.join(DATA_ASSETS_DIR, filename);
+    const publicCandidate = path.join(PUBLIC_ASSETS_DIR, filename);
+    const targetPath = fs.existsSync(dataCandidate)
+      ? dataCandidate
+      : fs.existsSync(publicCandidate)
+      ? publicCandidate
+      : null;
+
+    if (!targetPath) {
+      res.status(404).json({ error: 'Asset not found' });
+      return;
+    }
+
+    res.setHeader('Content-Type', mimeType);
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.sendFile(targetPath);
+  });
+
+  // Health & Diagnostics API
+  app.get('/api/health', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    const stateFileExists = fs.existsSync(STATE_FILE);
+    const stateFileBytes = stateFileExists ? fs.statSync(STATE_FILE).size : 0;
+    res.json({
+      ok: true,
+      stateFileExists,
+      stateFileBytes,
+      updatedAt: memoryStore.updatedAt,
+      smtpConfigured: adminAuth.isSmtpConfigured(),
+      needsInitialSetup: adminAuth.needsInitialSetup(),
+    });
+  });
+
+  // Live Shared State API for Cross-Device Student Login & Exam Sync
   app.get('/api/state', (_req, res) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.json(memoryStore);
@@ -912,11 +1065,25 @@ async function startServer() {
     (!isTsxDev && fs.existsSync(path.join(distPath, 'index.html')));
 
   if (isProd && fs.existsSync(path.join(distPath, 'index.html'))) {
-    app.use(express.static(distPath));
+    app.use(
+      '/assets',
+      express.static(path.join(distPath, 'assets'), {
+        maxAge: '1y',
+        immutable: true,
+      })
+    );
+    app.use(express.static(distPath, { maxAge: '1h' }));
     app.use((_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   } else {
+    // Allow browser disk-caching of Vite's content-hashed prebundled deps (?v=...) across page reloads
+    app.use('/node_modules/.vite/deps', (req, res, next) => {
+      if (req.query?.v) {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      }
+      next();
+    });
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',

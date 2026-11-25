@@ -311,15 +311,20 @@ export const CertificateManagement: React.FC = () => {
     institutionName,
   ]);
 
+  const previewSampleKey = JSON.stringify(previewSample);
+
   useEffect(() => {
     let active = true;
-    generateCertificateQrBase64(previewSample, 220).then((url) => {
-      if (active) setPreviewQrDataUrl(url);
-    });
+    const timer = window.setTimeout(() => {
+      generateCertificateQrBase64(previewSample, 220).then((url) => {
+        if (active) setPreviewQrDataUrl(url);
+      });
+    }, 220);
     return () => {
       active = false;
+      window.clearTimeout(timer);
     };
-  }, [previewSample]);
+  }, [previewSampleKey]);
 
   // Count of passed certificates per section (Section A - Section L)
   const sectionCounts = useMemo(() => {

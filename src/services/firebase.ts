@@ -257,12 +257,34 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
   return errInfo;
 }
 
-// Test connection on boot per Firebase skill guidelines
+function withTimeout<T>(promise: Promise<T>, timeoutMs = 4000): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error('Firestore request timed out'));
+    }, timeoutMs);
+    promise
+      .then((val) => {
+        clearTimeout(timer);
+        resolve(val);
+      })
+      .catch((err) => {
+        clearTimeout(timer);
+        reject(err);
+      });
+  });
+}
+
+// Test connection on boot per Firebase skill guidelines (non-blocking, bounded timeout)
 export async function testFirestoreConnection() {
   try {
-    await getDocFromServer(doc(db, 'examflow_sync', 'live_state'));
+    await withTimeout(getDocFromServer(doc(db, 'examflow_sync', 'live_state')), 4000);
   } catch (error: any) {
-    if (error instanceof Error && (error.message.includes('the client is offline') || error.message.includes('token-service-api'))) {
+    if (
+      error instanceof Error &&
+      (error.message.includes('the client is offline') ||
+        error.message.includes('token-service-api') ||
+        error.message.includes('timed out'))
+    ) {
       // Gracefully operate with Express API + local storage fallback
     }
   }
@@ -273,9 +295,9 @@ export async function fetchFirestoreSyncState(): Promise<{ updatedAt: number; st
     const docRef = doc(db, 'examflow_sync', 'live_state');
     let snap;
     try {
-      snap = await getDocFromServer(docRef);
+      snap = await withTimeout(getDocFromServer(docRef), 4000);
     } catch {
-      snap = await getDoc(docRef);
+      snap = await withTimeout(getDoc(docRef), 2500);
     }
     if (!snap || !snap.exists()) return null;
     const data = snap.data();

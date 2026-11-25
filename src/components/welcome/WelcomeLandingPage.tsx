@@ -30,15 +30,17 @@ export const WelcomeLandingPage: React.FC<WelcomeLandingPageProps> = ({
 
   return (
     <div className="min-h-screen bg-[#06071B] text-white selection:bg-purple-600 selection:text-white overflow-x-hidden relative flex flex-col">
-      {/* Ambient Cosmic Nebulae */}
-      <div className="pointer-events-none fixed inset-0 overflow-hidden z-0">
-        <div className="absolute -top-32 left-1/4 w-[520px] h-[520px] rounded-full bg-purple-700/20 blur-[130px]" />
-        <div className="absolute top-24 right-10 w-[460px] h-[460px] rounded-full bg-cyan-500/15 blur-[130px]" />
-        <div className="absolute bottom-10 left-1/3 w-[500px] h-[500px] rounded-full bg-indigo-700/20 blur-[140px]" />
-      </div>
+      {/* Ambient Cosmic Nebulae (GPU-friendly radial gradients instead of heavy blur filters) */}
+      <div
+        className="pointer-events-none fixed inset-0 overflow-hidden z-0"
+        style={{
+          backgroundImage:
+            'radial-gradient(circle 480px at 32% 6%, rgba(126, 34, 206, 0.22), transparent 70%), radial-gradient(circle 420px at 86% 24%, rgba(6, 182, 212, 0.16), transparent 70%), radial-gradient(circle 460px at 45% 92%, rgba(67, 56, 202, 0.2), transparent 72%)',
+        }}
+      />
 
       {/* Prominent Full-Width Top Navigation Bar */}
-      <header className="sticky top-0 z-30 border-b border-purple-500/25 bg-[#080A24]/95 backdrop-blur-xl">
+      <header className="sticky top-0 z-30 border-b border-purple-500/25 bg-[#080A24]/98">
         <div className="max-w-[1520px] mx-auto px-4 sm:px-8 lg:px-10 py-4 sm:py-5 flex flex-wrap lg:flex-nowrap items-center justify-between gap-6">
           <InstitutionalHeaderBrand logoUrl={collegeLogoUrl} large />
 
@@ -96,7 +98,13 @@ export const WelcomeLandingPage: React.FC<WelcomeLandingPageProps> = ({
         {/* Hero Section */}
         <section className="w-full rounded-3xl bg-gradient-to-br from-[#0B0E2E]/95 via-[#0E1238]/95 to-[#080A22]/95 border border-purple-500/30 p-8 sm:p-14 shadow-[0_20px_60px_rgba(5,6,24,0.85)] relative overflow-hidden">
           {/* Cosmic Horizon Glow inside Hero */}
-          <div className="pointer-events-none absolute -right-20 -top-20 w-[480px] h-[480px] rounded-full bg-gradient-to-br from-blue-600/25 via-purple-600/25 to-transparent blur-3xl" />
+          <div
+            className="pointer-events-none absolute -right-20 -top-20 w-[480px] h-[480px] rounded-full"
+            style={{
+              background:
+                'radial-gradient(circle, rgba(99, 102, 241, 0.26) 0%, rgba(124, 58, 237, 0.18) 38%, transparent 70%)',
+            }}
+          />
 
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-10 items-center relative z-10">
             {/* Left Column Copy */}
@@ -199,7 +207,7 @@ export const WelcomeLandingPage: React.FC<WelcomeLandingPageProps> = ({
               {/* Glowing Planetary Backdrop Circle */}
               <div className="w-72 h-72 sm:w-88 sm:h-88 rounded-full bg-gradient-to-tr from-[#1D2671] via-[#271766] to-[#0EA5E9]/40 border border-cyan-400/30 shadow-[0_0_90px_rgba(56,189,248,0.28)] flex items-center justify-center relative">
                 {/* Floating Left Analytics Card */}
-                <div className="absolute -left-4 sm:-left-10 -top-2 z-20 w-36 rounded-2xl bg-[#101642]/95 backdrop-blur-md border border-cyan-400/40 p-3 shadow-[0_10px_28px_rgba(5,6,24,0.8)]">
+                <div className="absolute -left-4 sm:-left-10 -top-2 z-20 w-36 rounded-2xl bg-[#101642]/95 border border-cyan-400/40 p-3 shadow-[0_10px_28px_rgba(5,6,24,0.8)]">
                   <div className="flex items-center justify-between text-[10px] text-cyan-300 font-bold mb-2">
                     <span>Live Sync</span>
                     <span>Active</span>
@@ -213,7 +221,7 @@ export const WelcomeLandingPage: React.FC<WelcomeLandingPageProps> = ({
                 </div>
 
                 {/* Floating Right Golden Trophy Card */}
-                <div className="absolute -right-4 sm:-right-8 -top-2 z-20 w-34 rounded-2xl bg-[#161342]/95 backdrop-blur-md border border-amber-400/40 p-3 shadow-[0_10px_28px_rgba(5,6,24,0.8)] flex flex-col items-center text-center">
+                <div className="absolute -right-4 sm:-right-8 -top-2 z-20 w-34 rounded-2xl bg-[#161342]/95 border border-amber-400/40 p-3 shadow-[0_10px_28px_rgba(5,6,24,0.8)] flex flex-col items-center text-center">
                   <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-amber-300 via-amber-500 to-orange-600 flex items-center justify-center text-slate-950 shadow-lg">
                     <Trophy className="w-6 h-6" />
                   </div>

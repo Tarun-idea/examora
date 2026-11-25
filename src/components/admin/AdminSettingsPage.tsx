@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import {
   Settings,
   CheckCircle2,
@@ -50,6 +50,14 @@ export const AdminSettingsPage: React.FC = () => {
     state.settings.collegeLogoUrl || ''
   );
   const [savedBanner, setSavedBanner] = useState<string | null>(null);
+
+  useEffect(() => {
+    const unsub = examStore.subscribe(() => {
+      const latestLogo = examStore.getState().settings.collegeLogoUrl || '';
+      setCollegeLogoUrl((prev) => (prev !== latestLogo ? latestLogo : prev));
+    });
+    return unsub;
+  }, []);
 
   // Change Password state inside Admin Settings
   const [currentPassword, setCurrentPassword] = useState<string>('');

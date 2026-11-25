@@ -18,10 +18,7 @@ import {
   Clock,
   CheckCircle2,
   X,
-  Code2,
   Calendar,
-  Crown,
-  ArrowRight,
 } from 'lucide-react';
 import { UserProfile, examStore } from '../services/examStore.ts';
 import { InstitutionalHeaderBrand } from './common/InstitutionalHeaderBrand.tsx';
@@ -123,7 +120,7 @@ export const AppSidebarLayout: React.FC<AppSidebarLayoutProps> = ({
   return (
     <div className="h-screen overflow-hidden bg-[#07081C] text-slate-100 flex flex-col">
       {/* Sleek Full-Width Top Header Bar (No Middle Divider Lines or Box Frames) */}
-      <header className="shrink-0 z-50 bg-[#080B24]/95 backdrop-blur-xl border-b border-purple-500/25 px-4 sm:px-6 py-2.5 flex flex-wrap lg:flex-nowrap items-center justify-between gap-4">
+      <header className="shrink-0 z-50 bg-[#080B24] border-b border-purple-500/25 px-4 sm:px-6 py-2.5 flex flex-wrap lg:flex-nowrap items-center justify-between gap-4">
         <div className="flex items-center gap-3 sm:gap-4 shrink-0">
           <button
             type="button"
@@ -260,7 +257,7 @@ export const AppSidebarLayout: React.FC<AppSidebarLayoutProps> = ({
                 className="flex items-center gap-2.5 pl-2 pr-3 py-1.5 rounded-xl bg-[#131742] border border-purple-500/30 hover:border-purple-400 transition-colors cursor-pointer"
               >
                 <div className="w-8 h-8 rounded-full bg-gradient-to-br from-blue-500 via-indigo-500 to-purple-600 text-white font-extrabold text-xs flex items-center justify-center shadow-[0_0_12px_rgba(99,102,241,0.5)]">
-                  {currentUser.name.charAt(0).toUpperCase()}
+                  {(currentUser.name || 'U').charAt(0).toUpperCase()}
                 </div>
                 <div className="hidden md:block text-left">
                   <div className="text-xs font-bold text-white leading-none">

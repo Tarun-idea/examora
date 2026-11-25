@@ -10,7 +10,11 @@ import {
   Send,
 } from 'lucide-react';
 import { examStore } from '../../services/examStore.ts';
-import { googleSignIn } from '../../services/firebase.ts';
+import {
+  getLoadedFirebaseModule,
+  loadFirebaseModule,
+  preloadFirebaseModule,
+} from '../../services/firebaseLoader.ts';
 
 interface ChangeAdminPasswordModalProps {
   isOpen: boolean;
@@ -49,21 +53,31 @@ export const ChangeAdminPasswordModal: React.FC<ChangeAdminPasswordModalProps> =
     setOtpEmail(
       examStore.getState().settings.adminEmail || 'tarunkumarv2008@gmail.com'
     );
-    examStore.fetchAdminAuthStatus().then((status) => {
-      setSmtpConfigured(status.smtpConfigured);
-      if (status.cooldownSecondsRemaining > 0) {
-        setResendCooldown(status.cooldownSecondsRemaining);
-      }
-    });
+    examStore
+      .fetchAdminAuthStatus()
+      .then((status) => {
+        setSmtpConfigured(status.smtpConfigured);
+        if (status.cooldownSecondsRemaining > 0) {
+          setResendCooldown(status.cooldownSecondsRemaining);
+        }
+      })
+      .catch(() => {});
   }, [isOpen]);
 
   useEffect(() => {
-    if (resendCooldown <= 0) return;
+    if (isOpen && mode === 'otp') {
+      preloadFirebaseModule();
+    }
+  }, [isOpen, mode]);
+
+  const isResendCoolingDown = resendCooldown > 0;
+  useEffect(() => {
+    if (!isResendCoolingDown) return;
     const timer = window.setInterval(() => {
       setResendCooldown((prev) => (prev > 1 ? prev - 1 : 0));
     }, 1000);
     return () => window.clearInterval(timer);
-  }, [resendCooldown]);
+  }, [isResendCoolingDown]);
 
   if (!isOpen) return null;
 
@@ -98,7 +112,10 @@ export const ChangeAdminPasswordModal: React.FC<ChangeAdminPasswordModalProps> =
     setSuccessMessage('');
     setIsSendingEmail(true);
     try {
-      const signInResult = await googleSignIn();
+      const loadedFb = getLoadedFirebaseModule();
+      const signInResult = loadedFb
+        ? await loadedFb.googleSignIn()
+        : await (await loadFirebaseModule()).googleSignIn();
       if (!signInResult?.accessToken) {
         setErrorMessage('Google sign-in did not complete with Gmail permission.');
         return;
@@ -121,17 +138,24 @@ export const ChangeAdminPasswordModal: React.FC<ChangeAdminPasswordModalProps> =
         `6-digit verification code sent to ${res.maskedEmail || otpEmail}. Check your Gmail inbox and enter it below.`
       );
     } catch (err: any) {
+      const code = err?.code;
       if (
-        err?.code === 'auth/popup-closed-by-user' ||
-        err?.code === 'auth/cancelled-popup-request'
+        code === 'auth/popup-closed-by-user' ||
+        code === 'auth/cancelled-popup-request'
       ) {
-        setErrorMessage('Google sign-in popup was closed before completing verification. Click again when ready.');
-      } else if (err?.code === 'auth/popup-blocked') {
+        setErrorMessage(
+          'Google sign-in popup was closed before completing verification. Click again when ready.'
+        );
+      } else if (code === 'auth/popup-blocked') {
         setErrorMessage(
           'Browser blocked the Google sign-in popup. Please allow popups and try again.'
         );
+      } else if (code === 'auth/unauthorized-domain') {
+        setErrorMessage(
+          'This domain is not authorized for Google popups. Please use SMTP email OTP or Current Password mode.'
+        );
       } else {
-        setErrorMessage(err?.message || 'Failed to verify Google account.');
+        setErrorMessage('Failed to verify Google account. Please try again.');
       }
     } finally {
       setIsSendingEmail(false);
