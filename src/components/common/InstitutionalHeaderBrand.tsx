@@ -5,6 +5,8 @@ interface InstitutionalHeaderBrandProps {
   arenaSubtitle?: string;
   compact?: boolean;
   large?: boolean;
+  heroHeader?: boolean;
+  workspaceHeader?: boolean;
 }
 
 export const InstitutionalHeaderBrand: React.FC<InstitutionalHeaderBrandProps> = ({
@@ -12,6 +14,8 @@ export const InstitutionalHeaderBrand: React.FC<InstitutionalHeaderBrandProps> =
   arenaSubtitle,
   compact = false,
   large = false,
+  heroHeader = false,
+  workspaceHeader = false,
 }) => {
   const effectiveLogo =
     logoUrl && logoUrl.trim() ? logoUrl : '/assets/panimalar-crest.png';
@@ -19,11 +23,23 @@ export const InstitutionalHeaderBrand: React.FC<InstitutionalHeaderBrandProps> =
   return (
     <div
       className={`flex items-center ${
-        large ? 'gap-5 sm:gap-7' : 'gap-4 sm:gap-6'
+        heroHeader
+          ? 'gap-4 sm:gap-6'
+          : large
+            ? 'gap-4 sm:gap-5'
+            : 'gap-3 sm:gap-4'
       } shrink-0 select-none`}
     >
-      {/* Left: Panimalar Crest + Institutional Title & Department (No Box Borders or Middle Lines) */}
-      <div className={`flex items-center ${large ? 'gap-4 sm:gap-5' : 'gap-3'}`}>
+      {/* Panimalar Crest + Institutional Lockup */}
+      <div
+        className={`flex items-center ${
+          heroHeader
+            ? 'gap-3 sm:gap-4'
+            : large
+              ? 'gap-3.5 sm:gap-4'
+              : 'gap-2.5 sm:gap-3'
+        }`}
+      >
         <img
           src={effectiveLogo}
           alt="Panimalar Engineering College Emblem"
@@ -35,60 +51,68 @@ export const InstitutionalHeaderBrand: React.FC<InstitutionalHeaderBrandProps> =
             }
           }}
           className={`${
-            large
-              ? 'w-24 h-24 sm:w-32 sm:h-32 lg:w-36 lg:h-36'
-              : compact
-                ? 'w-12 h-12'
-                : 'w-13 h-13 sm:w-14 sm:h-14'
-          } object-contain shrink-0 drop-shadow-[0_4px_16px_rgba(255,255,255,0.28)]`}
+            workspaceHeader
+              ? 'w-[78px] h-[80px]'
+              : heroHeader
+                ? 'w-[164px] h-[140px]'
+                : large
+                  ? 'w-14 h-14 sm:w-16 sm:h-16'
+                  : compact
+                    ? 'w-10 h-10'
+                    : 'w-11 h-11'
+          } object-contain shrink-0`}
         />
 
-        <div className="flex flex-col justify-center leading-tight">
+        <div
+          className={`flex flex-col justify-center leading-tight ${
+            workspaceHeader ? 'ml-[-7px]' : ''
+          }`}
+        >
           <div className="flex flex-wrap items-baseline gap-1.5">
             <span
               className={`${
-                large
-                  ? 'text-lg sm:text-xl lg:text-2xl'
-                  : compact
-                    ? 'text-sm sm:text-base'
-                    : 'text-base sm:text-lg'
+                heroHeader
+                  ? 'text-base sm:text-xl'
+                  : large
+                    ? 'text-base sm:text-lg'
+                    : compact
+                      ? 'text-xs sm:text-[15px]'
+                      : 'text-sm sm:text-[16px]'
               } font-black tracking-wide text-white uppercase leading-none`}
             >
               PANIMALAR
             </span>
             <span
               className={`${
-                large
-                  ? 'text-[11px] sm:text-sm lg:text-base'
-                  : compact
-                    ? 'text-[10px] sm:text-[11px]'
-                    : 'text-[11px] sm:text-xs'
-              } font-extrabold tracking-wider text-slate-100 uppercase leading-none`}
+                heroHeader
+                  ? 'text-[11px] sm:text-[13px] text-white'
+                  : large
+                    ? 'text-[11px] sm:text-xs text-slate-200'
+                    : compact
+                      ? 'text-[10px] text-slate-200'
+                      : 'text-[10px] sm:text-[11px] text-slate-200'
+              } font-extrabold tracking-wider uppercase leading-none`}
             >
               ENGINEERING COLLEGE
             </span>
           </div>
 
           <div
-            className={`flex flex-wrap items-center ${
-              large ? 'gap-1.5 mt-1' : 'gap-1.5 mt-1'
-            }`}
+            className={`flex flex-wrap items-center gap-x-1.5 gap-y-0.5 ${
+              heroHeader ? 'mt-1.5 text-[10px] sm:text-[11px]' : 'mt-1 text-[10px]'
+            } leading-none`}
           >
             <span
-              className={`${
-                large
-                  ? 'px-2 py-0.5 text-[9px] sm:text-[11px]'
-                  : 'px-1.5 py-0.5 text-[9px]'
-              } bg-[#D91B24] text-white font-extrabold tracking-wide rounded-xs leading-none`}
+              className={`inline-block bg-[#C62828] text-white font-bold ${
+                heroHeader ? 'px-2 py-[3px] rounded-[2px]' : 'px-1.5 py-[2px] rounded-[3px]'
+              } tracking-tight`}
             >
               An Autonomous Institution
             </span>
             <span
               className={`${
-                large
-                  ? 'text-[10px] sm:text-[11px] font-medium text-slate-200'
-                  : 'text-[9px] sm:text-[10px] font-medium text-slate-300'
-              } leading-none hidden sm:inline`}
+                heroHeader ? 'text-slate-200' : 'text-slate-300'
+              } hidden sm:inline`}
             >
               Affiliated to Anna University, Chennai
             </span>
@@ -96,38 +120,36 @@ export const InstitutionalHeaderBrand: React.FC<InstitutionalHeaderBrandProps> =
 
           <div
             className={`${
-              large
-                ? 'text-[11px] sm:text-xs mt-1'
+              heroHeader
+                ? 'text-[11px] sm:text-xs mt-1.5'
                 : 'text-[10px] sm:text-[11px] mt-1'
-            } font-bold text-cyan-300 tracking-wide leading-none`}
+            } font-bold text-cyan-400 tracking-wide leading-none`}
           >
             Department of AI and Data Science
           </div>
         </div>
       </div>
 
-      {/* Right: ExamFlow Brand Wordmark (Clean, No Divider Line) */}
-      <div className="flex flex-col justify-center shrink-0 pl-1">
+      {/* ExamFlow Wordmark */}
+      <div className={`hidden sm:flex flex-col justify-center shrink-0 ${heroHeader ? 'pl-1.5' : 'pl-1'}`}>
         <div
           className={`${
-            large
-              ? 'text-xl sm:text-2xl lg:text-3xl'
-              : compact
-                ? 'text-lg sm:text-xl'
-                : 'text-xl sm:text-2xl'
-          } font-extrabold tracking-tight text-white leading-none`}
+            heroHeader
+              ? 'text-xl sm:text-[26px]'
+              : large
+                ? 'text-xl sm:text-2xl'
+                : compact
+                  ? 'text-lg sm:text-xl'
+                  : 'text-lg sm:text-[22px]'
+          } font-black tracking-tight text-white leading-none`}
         >
           Exam
-          <span className="bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent">
+          <span className="bg-gradient-to-r from-purple-400 via-violet-400 to-cyan-400 bg-clip-text text-transparent">
             Flow
           </span>
         </div>
         {arenaSubtitle && (
-          <div
-            className={`${
-              large ? 'text-[11px] sm:text-xs mt-1' : 'text-[10px] sm:text-[11px] mt-1'
-            } font-medium text-slate-400 leading-none`}
-          >
+          <div className="text-[10px] sm:text-[11px] mt-0.5 font-medium text-slate-400 leading-none">
             {arenaSubtitle}
           </div>
         )}

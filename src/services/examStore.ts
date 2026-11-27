@@ -884,12 +884,80 @@ class ExamStore {
   private lastRemoteApiUpdatedAt = -1;
   // Server-verified Admin Bearer token held strictly in memory (never in localStorage or sessionStorage)
   private adminSessionToken: string | null = null;
+  // Set to true when server verifies the persistent HttpOnly Admin session cookie
+  private adminCookieAuthenticated = false;
+  // Non-secret UI hint indicating an Admin session was active prior to refresh so App avoids welcome flash
+  private adminSessionHintOnBoot = false;
 
   constructor() {
     this.state = this.loadFromStorage();
     if (typeof window !== 'undefined') {
       this.initCrossDeviceSync();
     }
+  }
+
+  public hasAdminSessionHint(): boolean {
+    return this.adminSessionHintOnBoot;
+  }
+
+  private getAdminAuthHeaders(includeJson = true): Record<string, string> {
+    const headers: Record<string, string> = {
+      'X-Requested-With': 'ExamFlow-Client',
+    };
+    if (includeJson) {
+      headers['Content-Type'] = 'application/json';
+    }
+    if (this.adminSessionToken) {
+      headers.Authorization = `Bearer ${this.adminSessionToken}`;
+    }
+    return headers;
+  }
+
+  private hasActiveAdminAuth(): boolean {
+    return Boolean(this.adminSessionToken || this.adminCookieAuthenticated);
+  }
+
+  /**
+   * Resilient API fetch with timeout and automatic retry on transient network drops
+   * or server cold-start/restart statuses (502/503/504).
+   */
+  private async fetchApiWithRetry(
+    url: string,
+    init: RequestInit = {},
+    maxAttempts = 3
+  ): Promise<Response> {
+    let lastError: unknown = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const controller =
+        typeof AbortController !== 'undefined' ? new AbortController() : null;
+      const timer = controller
+        ? globalThis.setTimeout(() => controller.abort(), 15000)
+        : null;
+      try {
+        const res = await fetch(url, {
+          credentials: 'include',
+          ...init,
+          signal: controller ? controller.signal : init.signal,
+        });
+        if (timer) globalThis.clearTimeout(timer);
+        if (
+          (res.status === 502 || res.status === 503 || res.status === 504) &&
+          attempt < maxAttempts
+        ) {
+          await new Promise((r) => globalThis.setTimeout(r, attempt * 500));
+          continue;
+        }
+        return res;
+      } catch (err) {
+        if (timer) globalThis.clearTimeout(timer);
+        lastError = err;
+        if (attempt < maxAttempts) {
+          await new Promise((r) => globalThis.setTimeout(r, attempt * 500));
+          continue;
+        }
+      }
+    }
+    throw lastError || new Error('Network request failed');
   }
 
   private nextTimestamp(): number {
@@ -1139,11 +1207,15 @@ class ExamStore {
     this.syncInFlight = true;
     try {
       // Always fetch fast Express /api/state (~3ms) immediately without blocking on Firestore
-      const apiRes = await fetch('/api/state', {
-        method: 'GET',
-        headers: { Accept: 'application/json' },
-        cache: 'no-store',
-      })
+      const apiRes = await this.fetchApiWithRetry(
+        '/api/state',
+        {
+          method: 'GET',
+          headers: { Accept: 'application/json' },
+          cache: 'no-store',
+        },
+        2
+      )
         .then((r) => (r.ok ? r.json() : null))
         .catch(() => null);
 
@@ -1214,25 +1286,31 @@ class ExamStore {
     const shared = this.getSharedPayload();
     try {
       if (role === 'admin') {
-        if (!this.adminSessionToken) {
+        if (!this.hasActiveAdminAuth()) {
           return;
         }
-        const apiRaw = await fetch('/api/state/sync', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${this.adminSessionToken}`,
+        const apiRaw = await this.fetchApiWithRetry(
+          '/api/state/sync',
+          {
+            method: 'POST',
+            headers: this.getAdminAuthHeaders(true),
+            body: JSON.stringify({ state: shared, role: 'admin' }),
           },
-          body: JSON.stringify({ state: shared, role: 'admin' }),
-        }).catch(() => null);
+          2
+        ).catch(() => null);
 
         if (apiRaw && apiRaw.status === 401) {
-          // Server rejected expired or unauthorized Admin token — clear session cleanly
+          // Server rejected expired or revoked Admin session — clear session cleanly
           this.adminSessionToken = null;
+          this.adminCookieAuthenticated = false;
           this.state.isAuthenticated = false;
           this.saveToStorage();
           for (const listener of this.listeners) {
-            listener();
+            try {
+              listener();
+            } catch {
+              // isolate UI listener errors
+            }
           }
           return;
         }
@@ -1252,19 +1330,26 @@ class ExamStore {
       } else {
         // Student role: only push student attempts/violations/certificates via server merge,
         // and then sync the authoritative merged state to Firestore so Admin data is never altered by students.
-        const apiRes = await fetch('/api/state/sync', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            role: 'student',
-            state: {
-              attempts: shared.attempts,
-              violations: shared.violations,
-              certificates: shared.certificates,
-              activities: shared.activities,
+        const apiRes = await this.fetchApiWithRetry(
+          '/api/state/sync',
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Requested-With': 'ExamFlow-Client',
             },
-          }),
-        })
+            body: JSON.stringify({
+              role: 'student',
+              state: {
+                attempts: shared.attempts,
+                violations: shared.violations,
+                certificates: shared.certificates,
+                activities: shared.activities,
+              },
+            }),
+          },
+          2
+        )
           .then((r) => (r.ok ? r.json() : null))
           .catch(() => null);
 
@@ -1343,32 +1428,40 @@ class ExamStore {
         }
 
         const raw = window.localStorage.getItem(STORAGE_KEY);
+        let mergedShared: Omit<ExamStoreState, 'isAuthenticated' | 'currentUser'> = seed;
         if (raw) {
-          const parsed = JSON.parse(raw);
-          // Migrate legacy session if SESSION_STORAGE_KEY was not yet written
-          if (!rawSession && typeof parsed.isAuthenticated === 'boolean') {
-            sessionAuth = parsed.isAuthenticated;
-            if (parsed.currentUser) {
-              sessionUser = parsed.currentUser;
+          try {
+            const parsed = JSON.parse(raw);
+            // Migrate legacy session if SESSION_STORAGE_KEY was not yet written
+            if (!rawSession && typeof parsed.isAuthenticated === 'boolean') {
+              sessionAuth = parsed.isAuthenticated;
+              if (parsed.currentUser) {
+                sessionUser = parsed.currentUser;
+              }
             }
+            mergedShared = mergeSharedPlatformState(seed, parsed);
+          } catch {
+            // ignore corrupt cache, still preserve session below
           }
-
-          const mergedShared = mergeSharedPlatformState(seed, parsed);
-          if (sessionUser.section) {
-            sessionUser.section = normalizeSection(sessionUser.section);
-          }
-
-          // Admin sessions require a fresh server-verified Bearer token in memory;
-          // never auto-authenticate Admin role from browser localStorage.
-          const safeSessionAuth =
-            sessionUser.role === 'admin' ? false : sessionAuth;
-
-          return {
-            ...mergedShared,
-            isAuthenticated: safeSessionAuth,
-            currentUser: sessionUser,
-          };
         }
+
+        if (sessionUser.section) {
+          sessionUser.section = normalizeSection(sessionUser.section);
+        }
+
+        // Admin sessions require server verification (via HttpOnly cookie in restoreSessionFromServer);
+        // never auto-authenticate Admin role from browser localStorage alone.
+        if (sessionUser.role === 'admin' && sessionAuth) {
+          this.adminSessionHintOnBoot = true;
+        }
+        const safeSessionAuth =
+          sessionUser.role === 'admin' ? false : sessionAuth;
+
+        return {
+          ...mergedShared,
+          isAuthenticated: safeSessionAuth,
+          currentUser: sessionUser,
+        };
       }
     } catch {
       // ignore storage errors
@@ -1377,22 +1470,26 @@ class ExamStore {
   }
 
   private saveToStorage() {
+    if (typeof window === 'undefined') return;
+    // Always persist lightweight session state independently so large cache quota errors never log users out
     try {
-      if (typeof window !== 'undefined') {
-        window.localStorage.setItem(
-          SESSION_STORAGE_KEY,
-          JSON.stringify({
-            isAuthenticated: this.state.isAuthenticated,
-            currentUser: this.state.currentUser,
-          })
-        );
-        window.localStorage.setItem(
-          STORAGE_KEY,
-          JSON.stringify(this.getSharedPayload())
-        );
-      }
+      window.localStorage.setItem(
+        SESSION_STORAGE_KEY,
+        JSON.stringify({
+          isAuthenticated: this.state.isAuthenticated,
+          currentUser: this.state.currentUser,
+        })
+      );
     } catch {
-      // ignore quota errors
+      // ignore storage errors
+    }
+    try {
+      window.localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify(this.getSharedPayload())
+      );
+    } catch {
+      // ignore quota errors on large shared payload
     }
   }
 
@@ -1460,11 +1557,18 @@ class ExamStore {
     cooldownSecondsRemaining: number;
   }> {
     try {
-      const res = await fetch('/api/auth/admin/status', {
-        method: 'GET',
-        headers: { Accept: 'application/json' },
-        cache: 'no-store',
-      });
+      const res = await this.fetchApiWithRetry(
+        '/api/auth/admin/status',
+        {
+          method: 'GET',
+          headers: {
+            Accept: 'application/json',
+            'X-Requested-With': 'ExamFlow-Client',
+          },
+          cache: 'no-store',
+        },
+        3
+      );
       if (res.ok) {
         return await res.json();
       }
@@ -1479,47 +1583,146 @@ class ExamStore {
     };
   }
 
+  public async restoreAdminSessionFromServer(): Promise<boolean> {
+    if (typeof window === 'undefined') return false;
+    // If already authenticated (e.g., active Student or already verified Admin), keep current session
+    if (this.state.isAuthenticated) {
+      this.adminSessionHintOnBoot = false;
+      return true;
+    }
+    try {
+      const res = await this.fetchApiWithRetry(
+        '/api/auth/admin/session',
+        {
+          method: 'GET',
+          headers: {
+            Accept: 'application/json',
+            'X-Requested-With': 'ExamFlow-Client',
+          },
+          cache: 'no-store',
+        },
+        3
+      );
+      if (res.status === 401 || res.status === 403) {
+        this.adminCookieAuthenticated = false;
+        this.adminSessionToken = null;
+        this.adminSessionHintOnBoot = false;
+        if (this.state.currentUser.role === 'admin') {
+          this.state.isAuthenticated = false;
+          this.saveToStorage();
+        }
+        return false;
+      }
+      if (!res.ok) {
+        this.adminSessionHintOnBoot = false;
+        return false;
+      }
+      const data = await res.json().catch(() => ({}));
+      if (!data?.ok || !data?.authenticated) {
+        this.adminCookieAuthenticated = false;
+        this.adminSessionHintOnBoot = false;
+        return false;
+      }
+
+      this.adminCookieAuthenticated = true;
+      this.adminSessionHintOnBoot = false;
+      const user: UserProfile = {
+        id: 'admin-1',
+        name:
+          data.user?.name ||
+          this.state.settings.adminName ||
+          'Administrator',
+        email:
+          data.user?.email ||
+          data.email ||
+          this.state.settings.adminEmail ||
+          'tarunkumarv2008@gmail.com',
+        role: 'admin',
+      };
+      this.state.currentUser = user;
+      this.state.isAuthenticated = true;
+      this.saveToStorage();
+      for (const listener of this.listeners) {
+        try {
+          listener();
+        } catch {
+          // isolate UI listener errors
+        }
+      }
+      void this.syncWithRemoteNow(false, false);
+      return true;
+    } catch {
+      this.adminSessionHintOnBoot = false;
+      return false;
+    }
+  }
+
   public async setupInitialAdminPassword(
     email: string,
     password: string,
     confirmPassword: string
   ): Promise<{ success: boolean; error?: string; user?: UserProfile }> {
+    let res: Response;
     try {
-      const res = await fetch('/api/auth/admin/setup', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password, confirmPassword }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || !data.ok || !data.token) {
-        return {
-          success: false,
-          error: data.error || 'Could not complete initial Administrator setup.',
-        };
-      }
-
-      this.adminSessionToken = data.token;
-      const user: UserProfile = {
-        id: 'admin-1',
-        name: this.state.settings.adminName || 'Administrator',
-        email: data.user?.email || email.trim(),
-        role: 'admin',
-      };
-      this.state.settings.adminEmail = user.email;
-      this.state.currentUser = user;
-      this.state.isAuthenticated = true;
-      this.saveToStorage();
-      await this.syncWithRemoteNow(false);
-      for (const listener of this.listeners) {
-        listener();
-      }
-      return { success: true, user };
+      res = await this.fetchApiWithRetry(
+        '/api/auth/admin/setup',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Requested-With': 'ExamFlow-Client',
+          },
+          body: JSON.stringify({ email, password, confirmPassword }),
+        },
+        3
+      );
     } catch {
       return {
         success: false,
-        error: 'Unable to reach the authentication server. Please try again.',
+        error: 'Unable to reach the authentication server. Please try again in a moment.',
       };
     }
+
+    if (res.status === 502 || res.status === 503 || res.status === 504) {
+      return {
+        success: false,
+        error: 'The server is waking up. Please click Save & Continue again in a moment.',
+      };
+    }
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok || !data.token) {
+      return {
+        success: false,
+        error: data.error || 'Could not complete initial Administrator setup.',
+      };
+    }
+
+    this.adminSessionToken = data.token;
+    this.adminCookieAuthenticated = true;
+    const user: UserProfile = {
+      id: 'admin-1',
+      name: this.state.settings.adminName || 'Administrator',
+      email: data.user?.email || email.trim(),
+      role: 'admin',
+    };
+    this.state.settings.adminEmail = user.email;
+    this.state.currentUser = user;
+    this.state.isAuthenticated = true;
+    this.saveToStorage();
+    try {
+      await this.syncWithRemoteNow(false);
+    } catch {
+      // non-fatal background sync error
+    }
+    for (const listener of this.listeners) {
+      try {
+        listener();
+      } catch {
+        // isolate UI listener errors
+      }
+    }
+    return { success: true, user };
   }
 
   public async loginWithRemoteSync(
@@ -1537,47 +1740,79 @@ class ExamStore {
         return { success: false, error: 'Please enter your Administrator password.' };
       }
 
+      let res: Response;
       try {
-        const res = await fetch('/api/auth/admin/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ identifier: cleanId, password: rawPass }),
-        });
-        const data = await res.json().catch(() => ({}));
-        if (!res.ok || !data.ok || !data.token) {
-          return {
-            success: false,
-            error:
-              data.error ||
-              'Access denied. Invalid Administrator username or password.',
-          };
-        }
-
-        this.adminSessionToken = data.token;
-        await this.syncWithRemoteNow(false);
-        const user: UserProfile = {
-          id: 'admin-1',
-          name: this.state.settings.adminName || 'Administrator',
-          email: data.user?.email || this.state.settings.adminEmail || 'tarunkumarv2008@gmail.com',
-          role: 'admin',
-        };
-        this.state.currentUser = user;
-        this.state.isAuthenticated = true;
-        this.saveToStorage();
-        for (const listener of this.listeners) {
-          listener();
-        }
-        return { success: true, user };
+        res = await this.fetchApiWithRetry(
+          '/api/auth/admin/login',
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Requested-With': 'ExamFlow-Client',
+            },
+            body: JSON.stringify({ identifier: cleanId, password: rawPass }),
+          },
+          3
+        );
       } catch {
         return {
           success: false,
-          error: 'Could not reach the authentication server. Please try again.',
+          error: 'Could not reach the authentication server. Please try again in a moment.',
         };
       }
+
+      if (res.status === 502 || res.status === 503 || res.status === 504) {
+        return {
+          success: false,
+          error: 'The authentication server is starting up. Please click Login again in a moment.',
+        };
+      }
+
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.ok || !data.token) {
+        return {
+          success: false,
+          error:
+            data.error ||
+            'Access denied. Invalid Administrator username or password.',
+        };
+      }
+
+      this.adminSessionToken = data.token;
+      this.adminCookieAuthenticated = true;
+      try {
+        await this.syncWithRemoteNow(false);
+      } catch {
+        // non-fatal: keep authenticated session even if remote sync retries in background
+      }
+      const user: UserProfile = {
+        id: 'admin-1',
+        name: this.state.settings.adminName || 'Administrator',
+        email: data.user?.email || this.state.settings.adminEmail || 'tarunkumarv2008@gmail.com',
+        role: 'admin',
+      };
+      this.state.currentUser = user;
+      this.state.isAuthenticated = true;
+      this.saveToStorage();
+      for (const listener of this.listeners) {
+        try {
+          listener();
+        } catch {
+          // isolate UI listener errors
+        }
+      }
+      return { success: true, user };
     }
 
-    // Student login: pull authoritative state from Cloud Firestore & Express backend first
-    await this.syncWithRemoteNow(false);
+    // Student login: first pull fast Express /api/state (~3ms)
+    await this.syncWithRemoteNow(false, false);
+    const firstAttempt = this.login(identifier, password, 'student');
+    if (firstAttempt.success) {
+      return firstAttempt;
+    }
+
+    // Cross-device / cold-start fallback: pull latest students directly from Cloud Firestore and retry
+    await this.syncFirestoreInBackground();
     return this.login(identifier, password, 'student');
   }
 
@@ -1587,6 +1822,7 @@ class ExamStore {
     role: 'admin' | 'student'
   ): { success: boolean; error?: string; user?: UserProfile } {
     const cleanId = identifier.trim().toLowerCase();
+    const compactId = cleanId.replace(/\s+/g, '');
     const rawPass = password.trim();
 
     if (!cleanId) {
@@ -1607,25 +1843,28 @@ class ExamStore {
     }
 
     // Student lookup strictly against live registered students across synced devices
-    const student = this.state.students.find(
-      (s) =>
-        s.studentId.trim().toLowerCase() === cleanId ||
-        s.email.trim().toLowerCase() === cleanId
-    );
+    const student = this.state.students.find((s) => {
+      const sid = s.studentId.trim().toLowerCase();
+      const sEmail = s.email.trim().toLowerCase();
+      return (
+        sid === cleanId ||
+        sid.replace(/\s+/g, '') === compactId ||
+        sEmail === cleanId
+      );
+    });
 
     if (!student) {
       return {
         success: false,
         error:
-          'Student account not found. Please contact the Administrator to register your Student ID.',
+          'Student account not found. Please check your Student ID or Email, or contact the Administrator.',
       };
     }
 
     if (student.status === 'Inactive') {
       return {
         success: false,
-        error:
-          'This student account is currently deactivated. Contact your examination administrator.',
+        error: `Student account ${student.studentId} is currently marked Inactive. Please ask the Administrator to set your status to Active in Student Management.`,
       };
     }
 
@@ -1725,21 +1964,22 @@ class ExamStore {
     newPassword: string,
     confirmPassword: string
   ): Promise<{ success: boolean; error?: string }> {
-    if (!this.adminSessionToken) {
+    if (!this.hasActiveAdminAuth()) {
       return {
         success: false,
         error: 'Your Administrator session has expired. Please sign in again.',
       };
     }
     try {
-      const res = await fetch('/api/auth/admin/password', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${this.adminSessionToken}`,
+      const res = await this.fetchApiWithRetry(
+        '/api/auth/admin/password',
+        {
+          method: 'POST',
+          headers: this.getAdminAuthHeaders(true),
+          body: JSON.stringify({ currentPassword, newPassword, confirmPassword }),
         },
-        body: JSON.stringify({ currentPassword, newPassword, confirmPassword }),
-      });
+        3
+      );
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) {
         return {
@@ -1749,6 +1989,7 @@ class ExamStore {
       }
       if (typeof data.token === 'string' && data.token) {
         this.adminSessionToken = data.token;
+        this.adminCookieAuthenticated = true;
       }
       this.logActivity('student', 'Administrator security password updated.');
       this.notify('admin');
@@ -1769,11 +2010,18 @@ class ExamStore {
     error?: string;
   }> {
     try {
-      const res = await fetch('/api/auth/admin/otp/request', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email }),
-      });
+      const res = await this.fetchApiWithRetry(
+        '/api/auth/admin/otp/request',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Requested-With': 'ExamFlow-Client',
+          },
+          body: JSON.stringify({ email }),
+        },
+        2
+      );
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) {
         return {
@@ -1807,11 +2055,18 @@ class ExamStore {
     error?: string;
   }> {
     try {
-      const res = await fetch('/api/auth/admin/otp/google', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, accessToken }),
-      });
+      const res = await this.fetchApiWithRetry(
+        '/api/auth/admin/otp/google',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Requested-With': 'ExamFlow-Client',
+          },
+          body: JSON.stringify({ email, accessToken }),
+        },
+        2
+      );
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) {
         return {
@@ -1840,11 +2095,18 @@ class ExamStore {
     confirmPassword: string
   ): Promise<{ success: boolean; error?: string }> {
     try {
-      const res = await fetch('/api/auth/admin/otp/verify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ otp, newPassword, confirmPassword }),
-      });
+      const res = await this.fetchApiWithRetry(
+        '/api/auth/admin/otp/verify',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Requested-With': 'ExamFlow-Client',
+          },
+          body: JSON.stringify({ otp, newPassword, confirmPassword }),
+        },
+        2
+      );
       const data = await res.json().catch(() => ({}));
       if (!res.ok || !data.ok) {
         return {
@@ -1854,6 +2116,7 @@ class ExamStore {
       }
       // Clear any previous Admin token since the server revoked all old sessions
       this.adminSessionToken = null;
+      this.adminCookieAuthenticated = false;
       return { success: true };
     } catch {
       return {
@@ -1864,15 +2127,26 @@ class ExamStore {
   }
 
   public logout() {
-    if (this.adminSessionToken) {
-      const tokenToRevoke = this.adminSessionToken;
-      this.adminSessionToken = null;
-      if (typeof window !== 'undefined') {
-        void fetch('/api/auth/admin/logout', {
-          method: 'POST',
-          headers: { Authorization: `Bearer ${tokenToRevoke}` },
-        }).catch(() => {});
+    const tokenToRevoke = this.adminSessionToken;
+    const wasAdmin =
+      this.adminCookieAuthenticated ||
+      Boolean(tokenToRevoke) ||
+      this.state.currentUser.role === 'admin';
+    this.adminSessionToken = null;
+    this.adminCookieAuthenticated = false;
+    this.adminSessionHintOnBoot = false;
+    if (wasAdmin && typeof window !== 'undefined') {
+      const headers: Record<string, string> = {
+        'X-Requested-With': 'ExamFlow-Client',
+      };
+      if (tokenToRevoke) {
+        headers.Authorization = `Bearer ${tokenToRevoke}`;
       }
+      void fetch('/api/auth/admin/logout', {
+        method: 'POST',
+        credentials: 'include',
+        headers,
+      }).catch(() => {});
     }
     this.state.isAuthenticated = false;
     this.saveToStorage();

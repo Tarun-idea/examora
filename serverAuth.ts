@@ -7,7 +7,7 @@ export const DEFAULT_OWNER_ADMIN_EMAIL = 'tarunkumarv2008@gmail.com';
 const OTP_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const OTP_COOLDOWN_MS = 60 * 1000; // 60 seconds
 const OTP_MAX_ATTEMPTS = 5;
-const SESSION_TTL_MS = 12 * 60 * 60 * 1000; // 12 hours
+const SESSION_TTL_MS = 365 * 24 * 60 * 60 * 1000; // Persistent until explicit logout (365 days)
 const LOGIN_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
 const LOGIN_MAX_FAILURES = 8;
 
@@ -34,9 +34,20 @@ export interface AdminSession {
   expiresAt: number;
 }
 
+interface StoredAdminSession {
+  tokenHash: string;
+  email: string;
+  createdAt: number;
+  expiresAt: number;
+}
+
 interface LoginAttemptRecord {
   failures: number;
   resetAt: number;
+}
+
+function hashSessionToken(rawToken: string): string {
+  return crypto.createHash('sha256').update(rawToken).digest('hex');
 }
 
 function hashSecret(value: string, salt: string): string {
@@ -118,14 +129,82 @@ function buildOtpEmailHtml(recipientEmail: string, otpCode: string): string {
 
 export class ServerAdminAuthService {
   private authFilePath: string;
+  private sessionsFilePath: string;
+  private revokedFilePath: string;
+  private fallbackSigningKey: Buffer;
   private stored: StoredAdminAuth | null = null;
-  private sessions = new Map<string, AdminSession>();
+  private sessions = new Map<string, StoredAdminSession>();
+  private revokedSessionIds = new Set<string>();
   private activeOtp: ActiveOtpChallenge | null = null;
   private loginFailures = new Map<string, LoginAttemptRecord>();
 
   constructor(dataDir: string) {
     this.authFilePath = path.join(dataDir, 'examflow_admin_auth.json');
+    this.sessionsFilePath = path.join(dataDir, 'examflow_admin_sessions.json');
+    this.revokedFilePath = path.join(dataDir, 'examflow_revoked_sessions.json');
+    this.fallbackSigningKey = crypto.randomBytes(32);
     this.loadFromDisk();
+    this.loadSessionsFromDisk();
+    this.loadRevokedFromDisk();
+  }
+
+  private getSessionSigningKey(): Buffer {
+    const envSecret = (process.env.SESSION_SECRET || '').trim();
+    const envPass = this.getEnvPasswordOverride() || '';
+    const storedMaterial = this.stored
+      ? `${this.stored.passwordHash}:${this.stored.salt}`
+      : '';
+    const material = envSecret || storedMaterial || envPass;
+    if (!material) {
+      return this.fallbackSigningKey;
+    }
+    return crypto
+      .createHmac('sha256', 'examflow-persistent-session-key-v1')
+      .update(material)
+      .digest();
+  }
+
+  private getCredentialFingerprint(): string {
+    const envPass = this.getEnvPasswordOverride() || '';
+    const storedMaterial = this.stored
+      ? `${this.stored.passwordHash}:${this.stored.salt}:${this.stored.updatedAt}`
+      : '';
+    const material = storedMaterial || envPass || 'ephemeral';
+    return crypto
+      .createHash('sha256')
+      .update(`pwd-fp:${material}`)
+      .digest('hex')
+      .slice(0, 16);
+  }
+
+  private loadRevokedFromDisk() {
+    try {
+      if (!fs.existsSync(this.revokedFilePath)) return;
+      const parsed = JSON.parse(fs.readFileSync(this.revokedFilePath, 'utf8'));
+      if (Array.isArray(parsed)) {
+        for (const id of parsed) {
+          if (typeof id === 'string' && id.trim()) {
+            this.revokedSessionIds.add(id.trim());
+          }
+        }
+      }
+    } catch {
+      // ignore malformed file
+    }
+  }
+
+  private saveRevokedToDisk() {
+    try {
+      this.ensureParentDir();
+      const recent = Array.from(this.revokedSessionIds).slice(-200);
+      fs.writeFileSync(
+        this.revokedFilePath,
+        JSON.stringify(recent, null, 2),
+        'utf8'
+      );
+    } catch {
+      // ignore fs errors on read-only mounts
+    }
   }
 
   private ensureParentDir() {
@@ -168,9 +247,66 @@ export class ServerAdminAuthService {
     if (!this.stored) return;
     try {
       this.ensureParentDir();
-      const tmpPath = `${this.authFilePath}.${process.pid}.${Date.now()}.tmp`;
-      fs.writeFileSync(tmpPath, JSON.stringify(this.stored, null, 2), 'utf8');
-      fs.renameSync(tmpPath, this.authFilePath);
+      fs.writeFileSync(
+        this.authFilePath,
+        JSON.stringify(this.stored, null, 2),
+        'utf8'
+      );
+    } catch {
+      // ignore fs errors on read-only mounts
+    }
+  }
+
+  private loadSessionsFromDisk() {
+    try {
+      if (!fs.existsSync(this.sessionsFilePath)) return;
+      const raw = fs.readFileSync(this.sessionsFilePath, 'utf8');
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return;
+      const now = Date.now();
+      for (const item of parsed) {
+        if (
+          item &&
+          typeof item.tokenHash === 'string' &&
+          /^[a-f0-9]{64}$/i.test(item.tokenHash) &&
+          typeof item.email === 'string' &&
+          typeof item.expiresAt === 'number' &&
+          item.expiresAt > now
+        ) {
+          this.sessions.set(item.tokenHash, {
+            tokenHash: item.tokenHash,
+            email: item.email,
+            createdAt: Number(item.createdAt || now),
+            expiresAt: item.expiresAt,
+          });
+        }
+      }
+    } catch {
+      // ignore malformed session store
+    }
+  }
+
+  private saveSessionsToDisk() {
+    try {
+      this.ensureParentDir();
+      const now = Date.now();
+      const active: StoredAdminSession[] = [];
+      for (const [hash, rec] of this.sessions.entries()) {
+        if (rec.expiresAt > now) {
+          active.push(rec);
+        } else {
+          this.sessions.delete(hash);
+        }
+      }
+      // Cap stored sessions to most recent 50 to prevent unbounded growth
+      const trimmed = active
+        .sort((a, b) => b.createdAt - a.createdAt)
+        .slice(0, 50);
+      fs.writeFileSync(
+        this.sessionsFilePath,
+        JSON.stringify(trimmed, null, 2),
+        'utf8'
+      );
     } catch {
       // ignore fs errors on read-only mounts
     }
@@ -178,8 +314,11 @@ export class ServerAdminAuthService {
 
   private getEnvPasswordOverride(): string | null {
     const raw = process.env.ADMIN_INITIAL_PASSWORD;
-    if (typeof raw === 'string' && raw.trim().length > 0) {
-      return raw.trim();
+    if (typeof raw === 'string') {
+      const cleaned = raw.trim().replace(/^['"]+|['"]+$/g, '').trim();
+      if (cleaned.length > 0) {
+        return cleaned;
+      }
     }
     return null;
   }
@@ -377,7 +516,8 @@ export class ServerAdminAuthService {
     identifier: string,
     password: string,
     clientKey: string,
-    settingsAdminEmail?: string
+    settingsAdminEmail?: string,
+    settingsAdminName?: string
   ): { ok: boolean; statusCode?: number; error?: string; token?: string; email?: string } {
     if (this.needsInitialSetup()) {
       return {
@@ -397,18 +537,30 @@ export class ServerAdminAuthService {
 
     const cleanId = String(identifier || '').trim().toLowerCase();
     const rawPass = String(password || '');
+    const trimmedPass = rawPass.trim();
     const authorizedEmails = this.getAuthorizedAdminEmails(settingsAdminEmail);
+    const cleanAdminName = String(settingsAdminName || '').trim().toLowerCase();
 
-    const isIdValid = cleanId === 'admin' || authorizedEmails.has(cleanId);
-    const isPassValid = rawPass.length > 0 && this.verifyPasswordMatches(rawPass);
+    const isIdValid =
+      cleanId === 'admin' ||
+      cleanId === 'admin@examflow.edu' ||
+      authorizedEmails.has(cleanId) ||
+      (cleanAdminName.length > 0 && cleanId === cleanAdminName);
+    const isPassValid =
+      rawPass.length > 0 &&
+      (this.verifyPasswordMatches(rawPass) ||
+        (trimmedPass !== rawPass &&
+          trimmedPass.length > 0 &&
+          this.verifyPasswordMatches(trimmedPass)));
 
     if (!isIdValid || !isPassValid) {
       this.recordLoginFailure(clientKey);
       return {
         ok: false,
         statusCode: 401,
-        error:
-          'Access denied. Invalid Administrator username or password. Only authorized Admin credentials can access the Admin Portal.',
+        error: !isIdValid
+          ? 'Invalid Administrator username or email. Sign in with "admin" or your authorized Admin email.'
+          : 'Incorrect Administrator password. Please check your password or use Forgot Password to reset via email OTP.',
       };
     }
 
@@ -424,51 +576,163 @@ export class ServerAdminAuthService {
 
   public createSession(email: string): AdminSession {
     const now = Date.now();
-    const token = crypto.randomBytes(32).toString('hex');
-    const session: AdminSession = {
+    const expiresAt = now + SESSION_TTL_MS;
+    const jti = crypto.randomBytes(16).toString('hex');
+    const payload = {
+      jti,
+      email,
+      iat: now,
+      exp: expiresAt,
+      fp: this.getCredentialFingerprint(),
+    };
+    const payloadB64 = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+    const sigHex = crypto
+      .createHmac('sha256', this.getSessionSigningKey())
+      .update(payloadB64)
+      .digest('hex');
+    const token = `${payloadB64}.${sigHex}`;
+    const tokenHash = hashSessionToken(token);
+    const storedSession: StoredAdminSession = {
+      tokenHash,
+      email,
+      createdAt: now,
+      expiresAt,
+    };
+    this.sessions.set(tokenHash, storedSession);
+    this.saveSessionsToDisk();
+    return {
       token,
       email,
       createdAt: now,
-      expiresAt: now + SESSION_TTL_MS,
+      expiresAt,
     };
-    this.sessions.set(token, session);
-    return session;
+  }
+
+  private verifySignedToken(cleanToken: string): AdminSession | null {
+    const dotIdx = cleanToken.indexOf('.');
+    if (dotIdx <= 0 || dotIdx !== cleanToken.lastIndexOf('.')) return null;
+    const payloadB64 = cleanToken.slice(0, dotIdx);
+    const sigHex = cleanToken.slice(dotIdx + 1);
+    if (!/^[a-f0-9]{64}$/i.test(sigHex)) return null;
+
+    const expectedSig = crypto
+      .createHmac('sha256', this.getSessionSigningKey())
+      .update(payloadB64)
+      .digest('hex');
+    if (!timingSafeHexEquals(sigHex.toLowerCase(), expectedSig.toLowerCase())) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(
+        Buffer.from(payloadB64, 'base64url').toString('utf8')
+      );
+      if (
+        !parsed ||
+        typeof parsed.jti !== 'string' ||
+        typeof parsed.email !== 'string' ||
+        typeof parsed.exp !== 'number' ||
+        typeof parsed.fp !== 'string'
+      ) {
+        return null;
+      }
+      if (Date.now() > parsed.exp) return null;
+      if (this.revokedSessionIds.has(parsed.jti)) return null;
+      if (parsed.fp !== this.getCredentialFingerprint()) return null;
+
+      return {
+        token: cleanToken,
+        email: parsed.email,
+        createdAt: Number(parsed.iat || Date.now()),
+        expiresAt: parsed.exp,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  public verifyToken(rawToken?: string): AdminSession | null {
+    if (!rawToken || typeof rawToken !== 'string') return null;
+    const clean = rawToken.trim();
+    if (!clean) return null;
+
+    // 1. Verify HMAC-signed cold-start-resilient session token
+    if (clean.includes('.')) {
+      return this.verifySignedToken(clean);
+    }
+
+    // 2. Fallback: verify legacy 64-hex random session token in server map
+    if (!/^[a-f0-9]{64}$/i.test(clean)) return null;
+    const tokenHash = hashSessionToken(clean);
+    const session = this.sessions.get(tokenHash);
+    if (!session) return null;
+    if (Date.now() > session.expiresAt) {
+      this.sessions.delete(tokenHash);
+      this.saveSessionsToDisk();
+      return null;
+    }
+    return {
+      token: clean,
+      email: session.email,
+      createdAt: session.createdAt,
+      expiresAt: session.expiresAt,
+    };
   }
 
   public verifyBearerHeader(authHeader?: string): AdminSession | null {
     if (!authHeader || typeof authHeader !== 'string') return null;
-    const match = authHeader.match(/^Bearer\s+([a-f0-9]{64})$/i);
+    const match = authHeader.match(/^Bearer\s+([A-Za-z0-9._-]+)$/i);
     if (!match) return null;
-    const token = match[1];
-    const session = this.sessions.get(token);
-    if (!session) return null;
-    if (Date.now() > session.expiresAt) {
-      this.sessions.delete(token);
-      return null;
+    return this.verifyToken(match[1]);
+  }
+
+  public revokeToken(rawToken?: string) {
+    if (!rawToken || typeof rawToken !== 'string') return;
+    const clean = rawToken.trim();
+    if (!clean) return;
+    const tokenHash = hashSessionToken(clean);
+    if (this.sessions.delete(tokenHash)) {
+      this.saveSessionsToDisk();
     }
-    return session;
+    if (clean.includes('.')) {
+      const dotIdx = clean.indexOf('.');
+      try {
+        const parsed = JSON.parse(
+          Buffer.from(clean.slice(0, dotIdx), 'base64url').toString('utf8')
+        );
+        if (parsed && typeof parsed.jti === 'string' && parsed.jti) {
+          this.revokedSessionIds.add(parsed.jti);
+          this.saveRevokedToDisk();
+        }
+      } catch {
+        // ignore malformed token
+      }
+    }
   }
 
   public revokeBearerHeader(authHeader?: string) {
     if (!authHeader || typeof authHeader !== 'string') return;
-    const match = authHeader.match(/^Bearer\s+([a-f0-9]{64})$/i);
+    const match = authHeader.match(/^Bearer\s+([A-Za-z0-9._-]+)$/i);
     if (match) {
-      this.sessions.delete(match[1]);
+      this.revokeToken(match[1]);
     }
   }
 
   public revokeAllSessions() {
     this.sessions.clear();
+    this.saveSessionsToDisk();
   }
 
   public changePasswordAuthenticated(
-    authHeader: string | undefined,
+    authHeaderOrToken: string | undefined,
     currentPassword: string,
     newPassword: string,
     confirmPassword: string,
     settingsAdminEmail?: string
   ): { ok: boolean; statusCode?: number; error?: string; token?: string } {
-    const session = this.verifyBearerHeader(authHeader);
+    const session =
+      this.verifyBearerHeader(authHeaderOrToken) ||
+      this.verifyToken(authHeaderOrToken);
     if (!session) {
       return {
         ok: false,

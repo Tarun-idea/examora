@@ -3,24 +3,48 @@ import compression from 'compression';
 import crypto from 'crypto';
 import express from 'express';
 import fs from 'fs';
-import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
+import { initializeApp, getApps } from 'firebase/app';
+import { getFirestore, doc, getDoc, setDoc, setLogLevel } from 'firebase/firestore';
 import { ServerAdminAuthService } from './serverAuth.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Keep live-mutated runtime state & admin auth hashes outside the tracked source workspace
-// so the IDE file watcher never conflicts with runtime server writes or exposes auth hashes.
+// Prevent transient background network/Firestore errors from crashing the server process
+process.on('unhandledRejection', (reason) => {
+  console.error('[ExamFlow] Unhandled promise rejection (kept alive):', reason);
+});
+
+// Keep live-mutated runtime state & admin auth hashes in a hidden, gitignored dot-folder
+// so it persists across container restarts WITHOUT showing up or causing errors in the IDE file tree.
 const DATA_DIR =
-  process.env.EXAMFLOW_DATA_DIR || path.join(os.tmpdir(), 'examflow-runtime-data');
+  process.env.EXAMFLOW_DATA_DIR || path.join(__dirname, '.examflow-store');
 const DATA_ASSETS_DIR = path.join(DATA_DIR, 'assets');
 const PUBLIC_ASSETS_DIR = path.join(__dirname, 'public', 'assets');
 const STATE_FILE = path.join(DATA_DIR, 'examflow_shared_state.json');
 const adminAuth = new ServerAdminAuthService(DATA_DIR);
 let lastPersistedStateJson = '';
+
+// Initialize server-side Firestore client (for cold-start cross-device state hydration & mirroring)
+let serverFirestoreDb: ReturnType<typeof getFirestore> | null = null;
+try {
+  const fbConfigPath = path.join(__dirname, 'firebase-applet-config.json');
+  if (fs.existsSync(fbConfigPath)) {
+    const fbConfig = JSON.parse(fs.readFileSync(fbConfigPath, 'utf-8'));
+    setLogLevel('silent');
+    const fbApp =
+      getApps().length > 0 ? getApps()[0] : initializeApp(fbConfig, 'examflow-server');
+    serverFirestoreDb = getFirestore(
+      fbApp,
+      fbConfig.firestoreDatabaseId || 'ai-studio-2008-02d43818-3203-4254-81eb-0898309acdc4'
+    );
+  }
+} catch {
+  serverFirestoreDb = null;
+}
 
 interface SharedSyncPayload {
   updatedAt: number;
@@ -42,9 +66,7 @@ function ensureDataDir() {
 
 function writeFileAtomic(filePath: string, content: string | Buffer) {
   ensureDataDir();
-  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  fs.writeFileSync(tmpPath, content);
-  fs.renameSync(tmpPath, filePath);
+  fs.writeFileSync(filePath, content);
 }
 
 const IMAGE_MIME_TO_EXT: Record<string, string> = {
@@ -363,20 +385,97 @@ function loadServerState(): SharedSyncPayload {
 
 let memoryStore: SharedSyncPayload = loadServerState();
 
-function saveServerState(payload: SharedSyncPayload) {
+function hasMeaningfulState(st?: Record<string, any>): boolean {
+  if (!st || typeof st !== 'object') return false;
+  return (
+    Number(st.adminUpdatedAt || 0) > 0 ||
+    (Array.isArray(st.students) && st.students.length > 0) ||
+    (Array.isArray(st.subjects) && st.subjects.length > 0) ||
+    (Array.isArray(st.exams) && st.exams.length > 0)
+  );
+}
+
+function saveServerState(payload: SharedSyncPayload, mirrorToFirestore = false) {
   payload.state = sanitizeServerStateCollections(payload.state);
   const nextStateJson = JSON.stringify(payload.state);
   memoryStore = payload;
-  if (nextStateJson === lastPersistedStateJson && fs.existsSync(STATE_FILE)) {
-    return;
+  if (nextStateJson !== lastPersistedStateJson || !fs.existsSync(STATE_FILE)) {
+    try {
+      writeFileAtomic(STATE_FILE, JSON.stringify(payload, null, 2));
+      lastPersistedStateJson = nextStateJson;
+    } catch {
+      // ignore write errors if ephemeral filesystem
+    }
   }
-  try {
-    writeFileAtomic(STATE_FILE, JSON.stringify(payload, null, 2));
-    lastPersistedStateJson = nextStateJson;
-  } catch {
-    // ignore write errors if ephemeral filesystem
+  if (mirrorToFirestore && serverFirestoreDb && nextStateJson.length <= 940000) {
+    void setDoc(doc(serverFirestoreDb, 'examflow_sync', 'live_state'), {
+      updatedAt: payload.updatedAt || Date.now(),
+      payloadJson: nextStateJson,
+    }).catch(() => {
+      // non-fatal background mirror
+    });
   }
 }
+
+let firestoreHydrationPromise: Promise<void> | null = null;
+
+function hydrateServerStateFromFirestore(): Promise<void> {
+  if (!serverFirestoreDb) return Promise.resolve();
+  if (firestoreHydrationPromise) return firestoreHydrationPromise;
+
+  const fetchTask = (async () => {
+    try {
+      const snap = await getDoc(doc(serverFirestoreDb!, 'examflow_sync', 'live_state'));
+      if (!snap.exists()) return;
+      const data = snap.data();
+      if (!data || typeof data.payloadJson !== 'string') return;
+      const remoteState = JSON.parse(data.payloadJson);
+      if (!hasMeaningfulState(remoteState)) return;
+
+      const remoteUpdatedAt = Number(data.updatedAt || Date.now());
+      const localHasData = hasMeaningfulState(memoryStore.state);
+      const mergedState = localHasData
+        ? mergeServerStates(memoryStore.state, remoteState, 'admin')
+        : remoteState;
+
+      // Preserve extracted logo asset if remote Firestore logo field is empty and local static asset exists
+      if (
+        (!mergedState.settings?.collegeLogoUrl ||
+          !String(mergedState.settings.collegeLogoUrl).trim()) &&
+        fs.existsSync(path.join(PUBLIC_ASSETS_DIR, 'college-logo-bd9fb83a48b7.png'))
+      ) {
+        mergedState.settings = {
+          ...(mergedState.settings || {}),
+          collegeLogoUrl: '/api/assets/college-logo-bd9fb83a48b7.png',
+        };
+      }
+
+      if (typeof mergedState?.settings?.adminEmail === 'string') {
+        adminAuth.syncRecoveryEmail(mergedState.settings.adminEmail);
+      }
+
+      saveServerState(
+        {
+          updatedAt: Math.max(memoryStore.updatedAt || 0, remoteUpdatedAt),
+          state: mergedState,
+        },
+        false
+      );
+    } catch {
+      // non-fatal: fall back to local cache
+    }
+  })();
+
+  // Bound initial boot hydration wait to 4 seconds so endpoints never hang
+  firestoreHydrationPromise = Promise.race([
+    fetchTask,
+    new Promise<void>((resolve) => setTimeout(resolve, 4000)),
+  ]);
+  return firestoreHydrationPromise;
+}
+
+// Kick off Cloud Firestore hydration immediately on server startup
+void hydrateServerStateFromFirestore();
 
 function mergeArrayById(
   existingArr: any[] = [],
@@ -676,6 +775,7 @@ function mergeServerStates(
 
 async function startServer() {
   const app = express();
+  app.set('trust proxy', 1);
   app.use(compression({ threshold: 1024 }));
   app.use(express.json({ limit: '30mb' }));
 
@@ -777,6 +877,17 @@ async function startServer() {
       ? memoryStore.state.settings.adminEmail
       : undefined;
 
+  const getSettingsAdminName = (): string | undefined =>
+    typeof memoryStore.state?.settings?.adminName === 'string'
+      ? memoryStore.state.settings.adminName
+      : undefined;
+
+  const ensureHydratedIfEmpty = async () => {
+    if (!hasMeaningfulState(memoryStore.state)) {
+      await hydrateServerStateFromFirestore();
+    }
+  };
+
   const getClientIpKey = (req: express.Request): string =>
     String(
       req.headers['x-forwarded-for'] ||
@@ -786,173 +897,373 @@ async function startServer() {
       .split(',')[0]
       .trim();
 
-  app.get('/api/auth/admin/status', (_req, res) => {
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-    res.json(adminAuth.getPublicStatus(getSettingsAdminEmail()));
-  });
+  const ADMIN_SESSION_COOKIE = 'examflow_admin_session';
+  const ADMIN_COOKIE_MAX_AGE_SECONDS = 365 * 24 * 60 * 60; // 1 year (persists until explicit Logout)
 
-  app.post('/api/auth/admin/setup', (req, res) => {
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-    const email = String(req.body?.email || '').trim();
-    const password = String(req.body?.password || '');
-    const confirmPassword = String(req.body?.confirmPassword || '');
-    const result = adminAuth.setupInitialPassword(email, password, confirmPassword);
-    if (!result.ok) {
-      res.status(400).json({ ok: false, error: result.error });
-      return;
+  const parseCookieValue = (
+    cookieHeader: string | undefined,
+    name: string
+  ): string | undefined => {
+    if (!cookieHeader || typeof cookieHeader !== 'string') return undefined;
+    const parts = cookieHeader.split(';');
+    for (const part of parts) {
+      const eqIdx = part.indexOf('=');
+      if (eqIdx === -1) continue;
+      const key = part.slice(0, eqIdx).trim();
+      if (key === name) {
+        try {
+          return decodeURIComponent(part.slice(eqIdx + 1).trim());
+        } catch {
+          return part.slice(eqIdx + 1).trim();
+        }
+      }
     }
+    return undefined;
+  };
 
-    // Keep Admin Settings email synced with the claimed setup email
-    if (result.email) {
-      const nextState = {
-        ...memoryStore.state,
-        settings: {
-          ...(memoryStore.state.settings || {}),
-          adminEmail: result.email,
-        },
-        settingsUpdatedAt: Date.now(),
-      };
-      saveServerState({ updatedAt: Date.now(), state: nextState });
+  const isHttpsRequest = (req: express.Request): boolean => {
+    if (req.secure) return true;
+    const xfProto = String(req.headers['x-forwarded-proto'] || '')
+      .split(',')[0]
+      .trim()
+      .toLowerCase();
+    if (xfProto === 'https') return true;
+    const origin = String(req.headers.origin || '').trim().toLowerCase();
+    if (origin.startsWith('https://')) return true;
+    const referer = String(req.headers.referer || '').trim().toLowerCase();
+    if (referer.startsWith('https://')) return true;
+    return false;
+  };
+
+  const setAdminSessionCookie = (
+    req: express.Request,
+    res: express.Response,
+    token: string
+  ) => {
+    const attrs = [
+      `${ADMIN_SESSION_COOKIE}=${encodeURIComponent(token)}`,
+      'HttpOnly',
+      'Path=/',
+      `Max-Age=${ADMIN_COOKIE_MAX_AGE_SECONDS}`,
+    ];
+    if (isHttpsRequest(req)) {
+      attrs.push('Secure', 'SameSite=None', 'Partitioned');
+    } else {
+      attrs.push('SameSite=Lax');
     }
+    res.setHeader('Set-Cookie', attrs.join('; '));
+  };
 
-    res.json({
-      ok: true,
-      token: result.token,
-      user: {
-        id: 'admin-1',
-        name: memoryStore.state?.settings?.adminName || 'Administrator',
-        email: result.email,
-        role: 'admin',
-      },
-    });
-  });
+  const clearAdminSessionCookie = (
+    req: express.Request,
+    res: express.Response
+  ) => {
+    const attrs = [
+      `${ADMIN_SESSION_COOKIE}=`,
+      'HttpOnly',
+      'Path=/',
+      'Max-Age=0',
+    ];
+    if (isHttpsRequest(req)) {
+      attrs.push('Secure', 'SameSite=None', 'Partitioned');
+    } else {
+      attrs.push('SameSite=Lax');
+    }
+    res.setHeader('Set-Cookie', attrs.join('; '));
+  };
 
-  app.post('/api/auth/admin/login', (req, res) => {
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-    const identifier = String(req.body?.identifier || '');
-    const password = String(req.body?.password || '');
-    const result = adminAuth.loginAdmin(
-      identifier,
-      password,
-      getClientIpKey(req),
-      getSettingsAdminEmail()
+  const verifyCookieCsrf = (req: express.Request): boolean => {
+    // Allow requests carrying our explicit non-simple custom header
+    const xrw = String(req.headers['x-requested-with'] || '').trim();
+    if (xrw === 'ExamFlow-Client') return true;
+
+    // Otherwise verify Origin strictly matches X-Forwarded-Host or Host
+    const originHeader = String(req.headers.origin || '').trim();
+    const expectedHost = String(
+      req.headers['x-forwarded-host'] || req.headers.host || ''
+    )
+      .split(',')[0]
+      .trim()
+      .toLowerCase();
+    if (!originHeader || !expectedHost) return false;
+    try {
+      const originHost = new URL(originHeader).host.toLowerCase();
+      return originHost === expectedHost;
+    } catch {
+      return false;
+    }
+  };
+
+  const resolveAdminSession = (
+    req: express.Request,
+    requireCsrfForCookie = false
+  ) => {
+    const bearerSession = adminAuth.verifyBearerHeader(req.headers.authorization);
+    if (bearerSession) return bearerSession;
+
+    const cookieToken = parseCookieValue(
+      req.headers.cookie,
+      ADMIN_SESSION_COOKIE
     );
-    if (!result.ok) {
-      res.status(result.statusCode || 401).json({ ok: false, error: result.error });
-      return;
+    if (!cookieToken) return null;
+    if (requireCsrfForCookie && !verifyCookieCsrf(req)) {
+      return null;
     }
+    return adminAuth.verifyToken(cookieToken);
+  };
 
-    res.json({
-      ok: true,
-      token: result.token,
-      user: {
-        id: 'admin-1',
-        name: memoryStore.state?.settings?.adminName || 'Administrator',
-        email: result.email,
-        role: 'admin',
-      },
-    });
+  app.get('/api/auth/admin/status', async (_req, res) => {
+    try {
+      await ensureHydratedIfEmpty();
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      res.json(adminAuth.getPublicStatus(getSettingsAdminEmail()));
+    } catch {
+      res.status(500).json({ ok: false, error: 'Failed to read authentication status.' });
+    }
   });
 
-  app.get('/api/auth/admin/session', (req, res) => {
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-    const session = adminAuth.verifyBearerHeader(req.headers.authorization);
-    if (!session) {
-      res.status(401).json({ ok: false, authenticated: false });
-      return;
+  app.post('/api/auth/admin/setup', async (req, res) => {
+    try {
+      await ensureHydratedIfEmpty();
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      const email = String(req.body?.email || '').trim();
+      const password = String(req.body?.password || '');
+      const confirmPassword = String(req.body?.confirmPassword || '');
+      const result = adminAuth.setupInitialPassword(email, password, confirmPassword);
+      if (!result.ok) {
+        res.status(400).json({ ok: false, error: result.error });
+        return;
+      }
+
+      // Keep Admin Settings email synced with the claimed setup email
+      if (result.email) {
+        const nextState = {
+          ...memoryStore.state,
+          settings: {
+            ...(memoryStore.state.settings || {}),
+            adminEmail: result.email,
+          },
+          settingsUpdatedAt: Date.now(),
+        };
+        saveServerState({ updatedAt: Date.now(), state: nextState }, true);
+      }
+
+      if (result.token) {
+        setAdminSessionCookie(req, res, result.token);
+      }
+
+      res.json({
+        ok: true,
+        token: result.token,
+        user: {
+          id: 'admin-1',
+          name: memoryStore.state?.settings?.adminName || 'Administrator',
+          email: result.email,
+          role: 'admin',
+        },
+      });
+    } catch {
+      res.status(500).json({ ok: false, error: 'Initial setup encountered a server error. Please try again.' });
     }
-    res.json({
-      ok: true,
-      authenticated: true,
-      email: session.email,
-    });
+  });
+
+  app.post('/api/auth/admin/login', async (req, res) => {
+    try {
+      await ensureHydratedIfEmpty();
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      const identifier = String(req.body?.identifier || '');
+      const password = String(req.body?.password || '');
+      const result = adminAuth.loginAdmin(
+        identifier,
+        password,
+        getClientIpKey(req),
+        getSettingsAdminEmail(),
+        getSettingsAdminName()
+      );
+      if (!result.ok) {
+        res.status(result.statusCode || 401).json({ ok: false, error: result.error });
+        return;
+      }
+
+      if (result.token) {
+        setAdminSessionCookie(req, res, result.token);
+      }
+
+      res.json({
+        ok: true,
+        token: result.token,
+        user: {
+          id: 'admin-1',
+          name: memoryStore.state?.settings?.adminName || 'Administrator',
+          email: result.email,
+          role: 'admin',
+        },
+      });
+    } catch {
+      res.status(500).json({ ok: false, error: 'Authentication server encountered an error. Please try again.' });
+    }
+  });
+
+  app.get('/api/auth/admin/session', async (req, res) => {
+    try {
+      await ensureHydratedIfEmpty();
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      const session = resolveAdminSession(req, false);
+      if (!session) {
+        res.status(401).json({ ok: false, authenticated: false });
+        return;
+      }
+      res.json({
+        ok: true,
+        authenticated: true,
+        email: session.email,
+        user: {
+          id: 'admin-1',
+          name: memoryStore.state?.settings?.adminName || 'Administrator',
+          email: session.email,
+          role: 'admin',
+        },
+      });
+    } catch {
+      res.status(500).json({ ok: false, authenticated: false });
+    }
   });
 
   app.post('/api/auth/admin/logout', (req, res) => {
-    adminAuth.revokeBearerHeader(req.headers.authorization);
-    res.json({ ok: true });
+    try {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      const hasBearer = Boolean(req.headers.authorization);
+      const cookieToken = parseCookieValue(
+        req.headers.cookie,
+        ADMIN_SESSION_COOKIE
+      );
+      if (!hasBearer && cookieToken && !verifyCookieCsrf(req)) {
+        res.status(403).json({ ok: false, error: 'Cross-site logout request blocked.' });
+        return;
+      }
+      adminAuth.revokeBearerHeader(req.headers.authorization);
+      if (cookieToken) {
+        adminAuth.revokeToken(cookieToken);
+      }
+      clearAdminSessionCookie(req, res);
+      res.json({ ok: true });
+    } catch {
+      res.status(500).json({ ok: false, error: 'Logout failed.' });
+    }
   });
 
-  app.post('/api/auth/admin/password', (req, res) => {
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-    const currentPassword = String(req.body?.currentPassword || '');
-    const newPassword = String(req.body?.newPassword || '');
-    const confirmPassword = String(req.body?.confirmPassword || '');
-    const result = adminAuth.changePasswordAuthenticated(
-      req.headers.authorization,
-      currentPassword,
-      newPassword,
-      confirmPassword,
-      getSettingsAdminEmail()
-    );
-    if (!result.ok) {
-      res.status(result.statusCode || 400).json({ ok: false, error: result.error });
-      return;
+  app.post('/api/auth/admin/password', async (req, res) => {
+    try {
+      await ensureHydratedIfEmpty();
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      const verifiedSession = resolveAdminSession(req, true);
+      if (!verifiedSession) {
+        res.status(401).json({
+          ok: false,
+          error: 'Your Administrator session has expired. Please sign in again.',
+        });
+        return;
+      }
+      const currentPassword = String(req.body?.currentPassword || '');
+      const newPassword = String(req.body?.newPassword || '');
+      const confirmPassword = String(req.body?.confirmPassword || '');
+      const result = adminAuth.changePasswordAuthenticated(
+        verifiedSession.token,
+        currentPassword,
+        newPassword,
+        confirmPassword,
+        getSettingsAdminEmail()
+      );
+      if (!result.ok) {
+        res.status(result.statusCode || 400).json({ ok: false, error: result.error });
+        return;
+      }
+      if (result.token) {
+        setAdminSessionCookie(req, res, result.token);
+      }
+      res.json({ ok: true, token: result.token });
+    } catch {
+      res.status(500).json({ ok: false, error: 'Password update failed. Please try again.' });
     }
-    res.json({ ok: true, token: result.token });
   });
 
   app.post('/api/auth/admin/otp/request', async (req, res) => {
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-    const email = String(req.body?.email || '').trim();
-    const result = await adminAuth.requestOtpViaSmtp(email, getSettingsAdminEmail());
-    if (!result.ok) {
-      res.status(result.statusCode || 400).json({
-        ok: false,
-        error: result.error,
+    try {
+      await ensureHydratedIfEmpty();
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      const email = String(req.body?.email || '').trim();
+      const result = await adminAuth.requestOtpViaSmtp(email, getSettingsAdminEmail());
+      if (!result.ok) {
+        res.status(result.statusCode || 400).json({
+          ok: false,
+          error: result.error,
+          cooldownSeconds: result.cooldownSeconds,
+        });
+        return;
+      }
+      res.json({
+        ok: true,
+        maskedEmail: result.maskedEmail,
+        expiresInMinutes: result.expiresInMinutes,
         cooldownSeconds: result.cooldownSeconds,
       });
-      return;
+    } catch {
+      res.status(500).json({ ok: false, error: 'Failed to dispatch verification email. Please try again.' });
     }
-    res.json({
-      ok: true,
-      maskedEmail: result.maskedEmail,
-      expiresInMinutes: result.expiresInMinutes,
-      cooldownSeconds: result.cooldownSeconds,
-    });
   });
 
   app.post('/api/auth/admin/otp/google', async (req, res) => {
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-    const email = String(req.body?.email || '').trim();
-    const accessToken = String(req.body?.accessToken || '').trim();
-    const result = await adminAuth.requestOtpViaVerifiedGoogle(
-      email,
-      accessToken,
-      getSettingsAdminEmail()
-    );
-    if (!result.ok) {
-      res.status(result.statusCode || 400).json({
-        ok: false,
-        error: result.error,
+    try {
+      await ensureHydratedIfEmpty();
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      const email = String(req.body?.email || '').trim();
+      const accessToken = String(req.body?.accessToken || '').trim();
+      const result = await adminAuth.requestOtpViaVerifiedGoogle(
+        email,
+        accessToken,
+        getSettingsAdminEmail()
+      );
+      if (!result.ok) {
+        res.status(result.statusCode || 400).json({
+          ok: false,
+          error: result.error,
+          cooldownSeconds: result.cooldownSeconds,
+        });
+        return;
+      }
+      res.json({
+        ok: true,
+        maskedEmail: result.maskedEmail,
+        expiresInMinutes: result.expiresInMinutes,
         cooldownSeconds: result.cooldownSeconds,
       });
-      return;
+    } catch {
+      res.status(500).json({ ok: false, error: 'Google verification dispatch failed. Please try again.' });
     }
-    res.json({
-      ok: true,
-      maskedEmail: result.maskedEmail,
-      expiresInMinutes: result.expiresInMinutes,
-      cooldownSeconds: result.cooldownSeconds,
-    });
   });
 
-  app.post('/api/auth/admin/otp/verify', (req, res) => {
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-    const otp = String(req.body?.otp || '').trim();
-    const newPassword = String(req.body?.newPassword || '');
-    const confirmPassword = String(req.body?.confirmPassword || '');
-    const result = adminAuth.verifyOtpAndResetPassword(
-      otp,
-      newPassword,
-      confirmPassword,
-      getSettingsAdminEmail()
-    );
-    if (!result.ok) {
-      res.status(result.statusCode || 400).json({ ok: false, error: result.error });
-      return;
+  app.post('/api/auth/admin/otp/verify', async (req, res) => {
+    try {
+      await ensureHydratedIfEmpty();
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      const otp = String(req.body?.otp || '').trim();
+      const newPassword = String(req.body?.newPassword || '');
+      const confirmPassword = String(req.body?.confirmPassword || '');
+      const result = adminAuth.verifyOtpAndResetPassword(
+        otp,
+        newPassword,
+        confirmPassword,
+        getSettingsAdminEmail()
+      );
+      if (!result.ok) {
+        res.status(result.statusCode || 400).json({ ok: false, error: result.error });
+        return;
+      }
+      clearAdminSessionCookie(req, res);
+      res.json({ ok: true });
+    } catch {
+      res.status(500).json({ ok: false, error: 'Verification failed. Please try again.' });
     }
-    res.json({ ok: true });
   });
 
   // Serve extracted institution logo/asset images safely with strict filename allowlist
@@ -967,10 +1278,13 @@ async function startServer() {
     const mimeType = ASSET_EXT_TO_MIME[ext] || 'application/octet-stream';
     const dataCandidate = path.join(DATA_ASSETS_DIR, filename);
     const publicCandidate = path.join(PUBLIC_ASSETS_DIR, filename);
+    const distCandidate = path.join(__dirname, 'dist', 'assets', filename);
     const targetPath = fs.existsSync(dataCandidate)
       ? dataCandidate
       : fs.existsSync(publicCandidate)
       ? publicCandidate
+      : fs.existsSync(distCandidate)
+      ? distCandidate
       : null;
 
     if (!targetPath) {
@@ -1000,13 +1314,19 @@ async function startServer() {
   });
 
   // Live Shared State API for Cross-Device Student Login & Exam Sync
-  app.get('/api/state', (_req, res) => {
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-    res.json(memoryStore);
+  app.get('/api/state', async (_req, res) => {
+    try {
+      await ensureHydratedIfEmpty();
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      res.json(memoryStore);
+    } catch {
+      res.status(500).json({ ok: false, error: 'Failed to load shared state.' });
+    }
   });
 
-  app.post('/api/state/sync', (req, res) => {
+  app.post('/api/state/sync', async (req, res) => {
     try {
+      await ensureHydratedIfEmpty();
       const incomingState = req.body?.state;
       const replaceAll = Boolean(req.body?.replaceAll);
       const requestedRole: 'admin' | 'student' | 'anonymous' =
@@ -1016,11 +1336,9 @@ async function startServer() {
           ? 'student'
           : 'anonymous';
 
-      // Strictly require a server-verified Admin Bearer session for any Admin write or replaceAll
+      // Strictly require a server-verified Admin session (Bearer or HttpOnly cookie + CSRF) for any Admin write or replaceAll
       if (requestedRole === 'admin' || replaceAll) {
-        const verifiedSession = adminAuth.verifyBearerHeader(
-          req.headers.authorization
-        );
+        const verifiedSession = resolveAdminSession(req, true);
         if (!verifiedSession) {
           res.status(401).json({
             error:
@@ -1048,7 +1366,7 @@ async function startServer() {
           updatedAt: Date.now(),
           state: nextState,
         };
-        saveServerState(nextPayload);
+        saveServerState(nextPayload, true);
       }
 
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
@@ -1057,6 +1375,23 @@ async function startServer() {
       res.status(500).json({ error: err?.message || 'Sync error' });
     }
   });
+
+  // Always return JSON for API parsing/body errors instead of HTML error pages
+  app.use(
+    '/api',
+    (
+      err: any,
+      _req: express.Request,
+      res: express.Response,
+      _next: express.NextFunction
+    ) => {
+      const status = Number(err?.status || err?.statusCode || 500);
+      res.status(status >= 400 && status < 600 ? status : 500).json({
+        ok: false,
+        error: err?.message || 'Unexpected API error.',
+      });
+    }
+  );
 
   const distPath = path.join(__dirname, 'dist');
   const isTsxDev = process.execArgv.some((arg) => arg.includes('tsx'));

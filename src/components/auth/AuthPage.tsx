@@ -13,11 +13,11 @@ import {
   AlertCircle,
   ArrowLeft,
   Send,
-  Zap,
-  Trophy,
   KeyRound,
   RefreshCw,
   X,
+  Zap,
+  Trophy,
 } from 'lucide-react';
 import { examStore } from '../../services/examStore.ts';
 import {
@@ -26,7 +26,6 @@ import {
   preloadFirebaseModule,
 } from '../../services/firebaseLoader.ts';
 import { InstitutionalHeaderBrand } from '../common/InstitutionalHeaderBrand.tsx';
-import { GlobalFooter } from '../common/GlobalFooter.tsx';
 
 function suggestCorrectedEmail(rawEmail: string): string | null {
   const clean = rawEmail.trim().toLowerCase();
@@ -305,7 +304,6 @@ export const AuthPage: React.FC<AuthPageProps> = ({
 
     setSendingEmail(true);
     try {
-      // Use already-preloaded Firebase module synchronously inside click gesture to avoid popup blockers
       const loadedFb = getLoadedFirebaseModule();
       const signInResult = loadedFb
         ? await loadedFb.googleSignIn()
@@ -413,166 +411,153 @@ export const AuthPage: React.FC<AuthPageProps> = ({
   };
 
   return (
-    <div className="min-h-screen bg-[#06071B] text-white flex flex-col justify-between relative overflow-x-hidden">
-      {/* Ambient Cosmic Nebulae (GPU-friendly radial gradients) */}
+    <div className="min-h-screen bg-[#07081B] text-slate-50 grid grid-cols-1 lg:grid-cols-2">
+      {/* Left Cosmic Branding Pane (Exact Match to Screenshot 3) */}
       <div
-        className="pointer-events-none fixed inset-0 overflow-hidden z-0"
+        className="p-8 sm:p-12 lg:p-14 border-b lg:border-b-0 lg:border-r border-purple-500/25 flex flex-col justify-between gap-10"
         style={{
-          backgroundImage:
-            'radial-gradient(circle 420px at 30% 10%, rgba(147, 51, 234, 0.24), transparent 70%), radial-gradient(circle 420px at 74% 88%, rgba(6, 182, 212, 0.18), transparent 70%)',
+          background:
+            'radial-gradient(ellipse 80% 55% at 25% 15%, rgba(99, 102, 241, 0.24), transparent 62%), linear-gradient(160deg, #0D1036 0%, #11103E 55%, #0A0D2B 100%)',
         }}
-      />
+      >
+        <div className="space-y-6">
+          <InstitutionalHeaderBrand
+            logoUrl={collegeLogoUrl}
+            arenaSubtitle={institutionName}
+            compact
+          />
 
-      <div className="flex-1 flex items-center justify-center p-4 sm:p-8 relative z-10">
-        <div className="w-full max-w-[1440px] grid grid-cols-1 lg:grid-cols-12 rounded-3xl overflow-hidden shadow-[0_25px_70px_rgba(4,5,20,0.9)] border border-purple-500/35 bg-[#0B0E2B]">
-          {/* Left Branding & Cosmic Showcase Column */}
-          <div className="lg:col-span-6 p-6 sm:p-10 text-white flex flex-col justify-between relative overflow-hidden bg-gradient-to-br from-[#0A0D2E] via-[#131147] to-[#1E145E] border-b lg:border-b-0 lg:border-r border-purple-500/25">
-            <div>
-              <div className="flex flex-wrap items-center justify-between gap-3 pb-5 border-b border-purple-400/20">
-                <InstitutionalHeaderBrand
-                  logoUrl={collegeLogoUrl}
-                  arenaSubtitle={institutionName}
-                  compact
-                />
+          <div>
+            <button
+              type="button"
+              onClick={onBackToWelcome}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#161948] hover:bg-[#1E225E] border border-purple-400/35 text-xs font-bold text-slate-100 transition-colors cursor-pointer"
+            >
+              <ArrowLeft className="w-3.5 h-3.5" />
+              Welcome Page
+            </button>
+          </div>
 
-                <button
-                  type="button"
-                  onClick={onBackToWelcome}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-white/10 hover:bg-white/20 border border-purple-400/30 text-xs font-semibold text-white transition-colors cursor-pointer whitespace-nowrap shrink-0"
-                >
-                  <ArrowLeft className="w-3.5 h-3.5" />
-                  Welcome Page
-                </button>
-              </div>
-
-              <div className="mt-8 inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-purple-500/15 border border-purple-400/30 text-xs font-semibold text-purple-200">
-                <Zap className="w-3.5 h-3.5 text-cyan-400 fill-cyan-400" />
-                <span>Learn • Practice • Compete</span>
-              </div>
-
-              <div className="mt-4 space-y-3">
-                <h1 className="text-3xl sm:text-4xl lg:text-[44px] font-extrabold leading-tight tracking-tight">
-                  Dream Big.
-                  <br />
-                  <span className="bg-gradient-to-r from-[#C084FC] via-[#818CF8] to-[#38BDF8] bg-clip-text text-transparent">
-                    Crack It.
-                  </span>
-                </h1>
-                <p className="text-sm sm:text-base text-slate-300 max-w-md leading-relaxed">
-                  Conduct high-integrity university examinations, coding
-                  competitions, and real-time evaluations in one unified platform.
-                </p>
-              </div>
-
-              <ul className="mt-8 space-y-3.5 text-xs sm:text-sm font-medium text-slate-200">
-                <li className="flex items-center gap-3">
-                  <span className="w-6 h-6 rounded-full bg-purple-500/25 border border-purple-400/40 flex items-center justify-center text-purple-300">
-                    <CheckCircle2 className="w-4 h-4" />
-                  </span>
-                  Multiple Question Types (MCQ, Descriptive &amp; Coding)
-                </li>
-                <li className="flex items-center gap-3">
-                  <span className="w-6 h-6 rounded-full bg-cyan-500/20 border border-cyan-400/40 flex items-center justify-center text-cyan-300">
-                    <CheckCircle2 className="w-4 h-4" />
-                  </span>
-                  Real-Time Fullscreen &amp; Tab-Switch Monitoring
-                </li>
-                <li className="flex items-center gap-3">
-                  <span className="w-6 h-6 rounded-full bg-amber-500/20 border border-amber-400/40 flex items-center justify-center text-amber-300">
-                    <Trophy className="w-4 h-4" />
-                  </span>
-                  Instant Evaluation &amp; Verifiable Certificates
-                </li>
-              </ul>
+          <div className="border-t border-purple-500/20 pt-8 space-y-6">
+            <div className="inline-flex items-center gap-2 px-4 py-1.5 rounded-full bg-[#18164A] border border-purple-400/35 text-xs font-bold text-slate-200">
+              <Zap className="w-3.5 h-3.5 text-cyan-400" />
+              <span>Learn • Practice • Compete</span>
             </div>
 
-            {/* Security Notice Footer */}
-            <div className="mt-10 pt-6 border-t border-purple-400/20">
-              <div className="bg-[#0B0E2B]/90 rounded-2xl p-4 border border-purple-400/30 flex items-center gap-3">
-                <ShieldCheck className="w-5 h-5 text-cyan-400 shrink-0" />
-                <div className="text-xs text-slate-300 leading-relaxed">
-                  <strong className="text-white">
-                    Protected Administrator Access:
-                  </strong>{' '}
-                  Administrator sign-in and password resets are strictly verified
-                  on the server. Verification codes are delivered exclusively to
-                  the authorized Administrator email inbox.
-                </div>
+            <h1 className="text-4xl sm:text-5xl lg:text-[54px] font-black tracking-tight leading-[1.05]">
+              <span className="block text-white">Dream Big.</span>
+              <span className="block bg-gradient-to-r from-[#A855F7] via-[#8B5CF6] to-[#38BDF8] bg-clip-text text-transparent">
+                Crack It.
+              </span>
+            </h1>
+
+            <p className="text-sm text-slate-300 max-w-md leading-relaxed">
+              Conduct high-integrity university examinations, coding competitions,
+              and real-time evaluations in one unified platform.
+            </p>
+
+            <div className="space-y-3.5 pt-2">
+              <div className="flex items-center gap-3 text-xs sm:text-sm font-medium text-slate-200">
+                <span className="w-7 h-7 rounded-full bg-purple-500/20 border border-purple-400/40 flex items-center justify-center text-purple-300 shrink-0">
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                </span>
+                <span>Multiple Question Types (MCQ, Descriptive &amp; Coding)</span>
+              </div>
+              <div className="flex items-center gap-3 text-xs sm:text-sm font-medium text-slate-200">
+                <span className="w-7 h-7 rounded-full bg-cyan-500/20 border border-cyan-400/40 flex items-center justify-center text-cyan-300 shrink-0">
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                </span>
+                <span>Real-Time Fullscreen &amp; Tab-Switch Monitoring</span>
+              </div>
+              <div className="flex items-center gap-3 text-xs sm:text-sm font-medium text-slate-200">
+                <span className="w-7 h-7 rounded-full bg-amber-500/20 border border-amber-400/40 flex items-center justify-center text-amber-400 shrink-0">
+                  <Trophy className="w-3.5 h-3.5" />
+                </span>
+                <span>Instant Evaluation &amp; Verifiable Certificates</span>
               </div>
             </div>
           </div>
+        </div>
 
-          {/* Right Dark Cosmic Authentication Card */}
-          <div className="lg:col-span-6 bg-[#0D102D] p-8 sm:p-12 flex flex-col justify-center">
-            <div className="max-w-md mx-auto w-full">
-              {/* Top Emblem */}
-              <div className="flex flex-col items-center text-center">
-                <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-purple-600/25 to-indigo-600/25 border border-purple-500/40 flex items-center justify-center text-purple-300 shadow-[0_0_25px_rgba(124,58,237,0.3)] mb-4">
-                  <GraduationCap className="w-8 h-8" />
+        <div className="border-t border-purple-500/20 pt-6">
+          <div className="rounded-2xl bg-[#0D1033]/85 border border-purple-500/30 p-4 flex items-start gap-3 text-xs text-slate-300 leading-relaxed">
+            <ShieldCheck className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
+            <span>
+              <strong className="text-white font-bold">
+                Role-Restricted Authentication:
+              </strong>{' '}
+              Only authorized Administrator credentials can access the Admin Console.
+              Students must sign in using their registered Student ID.
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* Right Authentication Form Pane (Exact Match to Screenshot 3) */}
+      <div className="p-8 sm:p-12 lg:p-16 bg-[#07081B] flex flex-col items-center justify-center">
+        <div className="w-full max-w-md">
+          {/* Centered Icon + Heading */}
+          <div className="flex flex-col items-center text-center mb-7">
+            <div className="w-14 h-14 rounded-2xl bg-[#181442] border border-purple-400/40 shadow-[0_0_24px_rgba(124,58,237,0.35)] flex items-center justify-center text-purple-300 mb-4">
+              <GraduationCap className="w-7 h-7" />
+            </div>
+            <h2 className="text-2xl sm:text-3xl font-black text-white tracking-tight">
+              {role === 'admin' && needsInitialSetup
+                ? 'Set Up Admin Security'
+                : forgotStep !== 'none'
+                ? 'Administrator Password Reset'
+                : 'Welcome Back!'}
+            </h2>
+            <p className="text-xs sm:text-sm text-slate-400 mt-1.5">
+              {role === 'admin'
+                ? needsInitialSetup
+                  ? 'Create your private Administrator password to secure ExamFlow'
+                  : 'Enter your Administrator username or email and password'
+                : 'Enter your registered Student ID and password'}
+            </p>
+          </div>
+
+          {/* Segmented Role Switcher */}
+          <div className="grid grid-cols-2 gap-2 p-1.5 bg-[#0D102D] rounded-2xl border border-purple-500/30">
+            <button
+              type="button"
+              onClick={() => handleRoleSwitch('admin')}
+              className={`flex items-center justify-center gap-2.5 py-3 px-3 rounded-xl text-left transition-all cursor-pointer ${
+                role === 'admin'
+                  ? 'bg-gradient-to-r from-[#8B5CF6] to-[#6366F1] text-white shadow-[0_0_22px_-3px_rgba(124,58,237,0.65)]'
+                  : 'text-slate-300 hover:text-white hover:bg-purple-500/10'
+              }`}
+            >
+              <Settings className="w-4 h-4 shrink-0" />
+              <div>
+                <div className="text-xs font-extrabold leading-none">Admin</div>
+                <div className={`text-[10px] mt-1 leading-none ${role === 'admin' ? 'text-purple-100' : 'text-slate-400'}`}>
+                  Manage Exams
                 </div>
-                <h2 className="text-2xl sm:text-3xl font-extrabold text-white">
-                  {role === 'admin' && needsInitialSetup
-                    ? 'Set Up Admin Security'
-                    : 'Welcome Back!'}
-                </h2>
-                <p className="text-xs sm:text-sm text-slate-400 mt-1">
-                  {role === 'admin'
-                    ? needsInitialSetup
-                      ? 'Create your private Administrator password to secure ExamFlow'
-                      : 'Enter your Administrator username or email and password'
-                    : 'Enter your registered Student ID and password'}
-                </p>
               </div>
+            </button>
 
-              {/* Role Switcher Pill (Admin vs Student) */}
-              <div className="mt-6 grid grid-cols-2 gap-2 p-1.5 bg-[#131742] rounded-2xl border border-purple-500/30">
-                <button
-                  type="button"
-                  onClick={() => handleRoleSwitch('admin')}
-                  className={`flex items-center justify-center gap-2.5 py-3 px-4 rounded-xl text-left transition-all cursor-pointer ${
-                    role === 'admin'
-                      ? 'bg-gradient-to-r from-[#7C3AED] to-[#4F46E5] text-white shadow-[0_0_20px_rgba(124,58,237,0.45)]'
-                      : 'text-slate-300 hover:bg-white/5'
-                  }`}
-                >
-                  <Settings className="w-5 h-5 shrink-0" />
-                  <div>
-                    <div className="text-sm font-bold leading-none">Admin</div>
-                    <div
-                      className={`text-[11px] mt-1 ${
-                        role === 'admin' ? 'text-purple-100' : 'text-slate-400'
-                      }`}
-                    >
-                      Manage Exams
-                    </div>
-                  </div>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => handleRoleSwitch('student')}
-                  className={`flex items-center justify-center gap-2.5 py-3 px-4 rounded-xl text-left transition-all cursor-pointer ${
-                    role === 'student'
-                      ? 'bg-gradient-to-r from-[#7C3AED] to-[#4F46E5] text-white shadow-[0_0_20px_rgba(124,58,237,0.45)]'
-                      : 'text-slate-300 hover:bg-white/5'
-                  }`}
-                >
-                  <UserCheck className="w-5 h-5 shrink-0" />
-                  <div>
-                    <div className="text-sm font-bold leading-none">Student</div>
-                    <div
-                      className={`text-[11px] mt-1 ${
-                        role === 'student' ? 'text-purple-100' : 'text-slate-400'
-                      }`}
-                    >
-                      Take Exams
-                    </div>
-                  </div>
-                </button>
+            <button
+              type="button"
+              onClick={() => handleRoleSwitch('student')}
+              className={`flex items-center justify-center gap-2.5 py-3 px-3 rounded-xl text-left transition-all cursor-pointer ${
+                role === 'student'
+                  ? 'bg-gradient-to-r from-[#8B5CF6] to-[#6366F1] text-white shadow-[0_0_22px_-3px_rgba(124,58,237,0.65)]'
+                  : 'text-slate-300 hover:text-white hover:bg-purple-500/10'
+              }`}
+            >
+              <UserCheck className="w-4 h-4 shrink-0" />
+              <div>
+                <div className="text-xs font-extrabold leading-none">Student</div>
+                <div className={`text-[10px] mt-1 leading-none ${role === 'student' ? 'text-purple-100' : 'text-slate-400'}`}>
+                  Take Exams
+                </div>
               </div>
+            </button>
+          </div>
 
               {error && (
-                <div className="mt-5 p-3.5 rounded-xl bg-red-500/15 border border-red-500/40 text-red-200 text-xs font-medium flex items-start justify-between gap-2.5">
+                <div className="mt-5 p-3.5 rounded-xl bg-red-500/12 border border-red-500/35 text-red-200 text-xs font-medium flex items-start justify-between gap-2.5">
                   <div className="flex items-start gap-2.5">
                     <AlertCircle className="w-4 h-4 shrink-0 mt-0.5 text-red-400" />
                     <span>{error}</span>
@@ -589,7 +574,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
               )}
 
               {otpSuccessMsg && (
-                <div className="mt-5 p-3.5 rounded-xl bg-emerald-500/15 border border-emerald-500/40 text-emerald-200 text-xs font-medium flex items-start justify-between gap-2.5">
+                <div className="mt-5 p-3.5 rounded-xl bg-emerald-500/12 border border-emerald-500/35 text-emerald-200 text-xs font-medium flex items-start justify-between gap-2.5">
                   <div className="flex items-start gap-2.5">
                     <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-emerald-400" />
                     <span>{otpSuccessMsg}</span>
@@ -608,8 +593,8 @@ export const AuthPage: React.FC<AuthPageProps> = ({
               {role === 'admin' && needsInitialSetup ? (
                 /* One-Time First-Run Administrator Password Claim Form */
                 <form onSubmit={handleInitialAdminSetup} className="mt-6 space-y-4">
-                  <div className="p-3.5 rounded-2xl bg-indigo-500/15 border border-indigo-400/35 text-xs text-indigo-100 leading-relaxed flex items-start gap-2.5">
-                    <KeyRound className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
+                  <div className="p-3.5 rounded-xl bg-sky-500/10 border border-sky-500/25 text-xs text-slate-200 leading-relaxed flex items-start gap-2.5">
+                    <KeyRound className="w-4 h-4 text-sky-400 shrink-0 mt-0.5" />
                     <span>
                       <strong>First-Time Security Setup:</strong> Set your private
                       Administrator password below. It is hashed securely on the
@@ -631,7 +616,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                       value={setupEmail}
                       onChange={(e) => setSetupEmail(e.target.value)}
                       placeholder="tarunkumarv2008@gmail.com"
-                      className="w-full px-4 py-3 rounded-xl border border-purple-500/35 bg-[#131742] text-sm text-white placeholder:text-slate-500 focus:border-purple-400 focus:outline-none"
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-slate-700 bg-[#0F172A] text-sm text-white placeholder:text-slate-500 focus:border-sky-400 focus:outline-none"
                     />
                   </div>
 
@@ -650,7 +635,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                       value={setupPassword}
                       onChange={(e) => setSetupPassword(e.target.value)}
                       placeholder="Create a strong password"
-                      className="w-full px-4 py-3 rounded-xl border border-purple-500/35 bg-[#131742] text-sm text-white placeholder:text-slate-500 focus:border-purple-400 focus:outline-none"
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-slate-700 bg-[#0F172A] text-sm text-white placeholder:text-slate-500 focus:border-sky-400 focus:outline-none"
                     />
                   </div>
 
@@ -669,14 +654,14 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                       value={setupConfirmPassword}
                       onChange={(e) => setSetupConfirmPassword(e.target.value)}
                       placeholder="Re-enter your password"
-                      className="w-full px-4 py-3 rounded-xl border border-purple-500/35 bg-[#131742] text-sm text-white placeholder:text-slate-500 focus:border-purple-400 focus:outline-none"
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-slate-700 bg-[#0F172A] text-sm text-white placeholder:text-slate-500 focus:border-sky-400 focus:outline-none"
                     />
                   </div>
 
                   <button
                     type="submit"
                     disabled={isSubmitting}
-                    className="w-full py-3.5 px-6 rounded-xl bg-gradient-to-r from-[#7C3AED] to-[#4F46E5] hover:from-[#8B5CF6] hover:to-[#6366F1] disabled:opacity-60 text-white font-bold text-sm shadow-[0_0_25px_rgba(124,58,237,0.45)] flex items-center justify-center gap-2 transition-all cursor-pointer"
+                    className="w-full py-3 px-6 rounded-xl bg-sky-600 hover:bg-sky-500 disabled:opacity-60 text-white font-bold text-sm flex items-center justify-center gap-2 transition-colors cursor-pointer"
                   >
                     <ShieldCheck className="w-4 h-4" />
                     {isSubmitting
@@ -697,7 +682,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                         : 'Student ID or Email'}
                     </label>
                     <div className="relative">
-                      <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                      <Mail className="w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
                       <input
                         id="auth-identifier"
                         type="text"
@@ -712,7 +697,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                             : 'Enter your registered Student ID'
                         }
                         autoComplete="username"
-                        className="w-full pl-10 pr-4 py-3 rounded-xl border border-purple-500/35 bg-[#131742] text-sm text-white placeholder:text-slate-500 focus:border-purple-400 focus:outline-none transition-colors"
+                        className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-700 bg-[#0F172A] text-sm text-white placeholder:text-slate-500 focus:border-sky-400 focus:outline-none transition-colors"
                       />
                     </div>
                   </div>
@@ -725,7 +710,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                       {role === 'admin' ? 'Password' : 'Password (or Student ID)'}
                     </label>
                     <div className="relative">
-                      <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                      <Lock className="w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
                       <input
                         id="auth-password"
                         type={showPassword ? 'text' : 'password'}
@@ -740,7 +725,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                             : 'Enter password (e.g. 123 or your Student ID)'
                         }
                         autoComplete="current-password"
-                        className="w-full pl-10 pr-10 py-3 rounded-xl border border-purple-500/35 bg-[#131742] text-sm text-white placeholder:text-slate-500 focus:border-purple-400 focus:outline-none transition-colors"
+                        className="w-full pl-10 pr-10 py-2.5 rounded-xl border border-slate-700 bg-[#0F172A] text-sm text-white placeholder:text-slate-500 focus:border-sky-400 focus:outline-none transition-colors"
                       />
                       <button
                         type="button"
@@ -757,13 +742,13 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                     </div>
                   </div>
 
-                  <div className="flex items-center justify-between text-xs pt-1">
+                  <div className="flex items-center justify-between text-xs pt-0.5">
                     <label className="inline-flex items-center gap-2 text-slate-300 font-medium cursor-pointer">
                       <input
                         type="checkbox"
                         checked={rememberMe}
                         onChange={(e) => setRememberMe(e.target.checked)}
-                        className="rounded border-purple-500/40 text-purple-600 focus:ring-purple-500"
+                        className="rounded border-slate-600 accent-sky-500"
                       />
                       Remember Me
                     </label>
@@ -771,13 +756,13 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                       <button
                         type="button"
                         onClick={handleOpenForgot}
-                        className="font-semibold text-purple-400 hover:text-purple-300 cursor-pointer"
+                        className="font-semibold text-sky-400 hover:text-sky-300 cursor-pointer"
                       >
                         Forgot Password?
                       </button>
                     ) : (
                       <span className="text-[11px] text-slate-400">
-                        Forgot password? Contact Administrator
+                        Need help? Contact Department Admin
                       </span>
                     )}
                   </div>
@@ -785,16 +770,16 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                   <button
                     type="submit"
                     disabled={isSubmitting}
-                    className="w-full py-3.5 px-6 rounded-xl bg-gradient-to-r from-[#7C3AED] to-[#4F46E5] hover:from-[#8B5CF6] hover:to-[#6366F1] disabled:opacity-60 text-white font-bold text-sm shadow-[0_0_25px_rgba(124,58,237,0.45)] flex items-center justify-center gap-2 transition-all cursor-pointer"
+                    className="w-full py-3.5 px-6 rounded-xl bg-gradient-to-r from-[#8B5CF6] to-[#6366F1] hover:from-[#9333EA] hover:to-[#6366F1] disabled:opacity-60 text-white font-bold text-sm flex items-center justify-center gap-2 shadow-[0_0_24px_-3px_rgba(124,58,237,0.65)] transition-all cursor-pointer"
                   >
                     <LogIn className="w-4 h-4" />
                     {isSubmitting ? 'Verifying & Signing In...' : 'Login'}
                   </button>
                 </form>
               ) : forgotStep === 'request' ? (
-                /* Step 1: Secure Email OTP Request (Zero On-Screen Code) */
+                /* Step 1: Secure Email OTP Request */
                 <form onSubmit={handleSendOtpViaSmtp} className="mt-6 space-y-4">
-                  <div className="flex items-center justify-between border-b border-purple-500/20 pb-2">
+                  <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
                     <span className="text-sm font-bold text-white">
                       Step 1: Send Reset Code to Admin Email
                     </span>
@@ -804,18 +789,18 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                         setForgotStep('none');
                         setError(null);
                       }}
-                      className="text-xs font-bold text-purple-400 hover:text-purple-300 cursor-pointer"
+                      className="text-xs font-bold text-sky-400 hover:text-sky-300 cursor-pointer"
                     >
                       Back to Login
                     </button>
                   </div>
 
-                  <div className="p-3.5 rounded-2xl bg-purple-500/10 border border-purple-500/30 text-xs text-slate-300 leading-relaxed flex items-start gap-2.5">
-                    <ShieldCheck className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
+                  <div className="p-3.5 rounded-xl bg-sky-500/10 border border-sky-500/25 text-xs text-slate-300 leading-relaxed flex items-start gap-2.5">
+                    <ShieldCheck className="w-4 h-4 text-sky-400 shrink-0 mt-0.5" />
                     <span>
                       For security, 6-digit reset codes are generated strictly on
                       the server and sent only to your authorized Admin email inbox (
-                      <span className="font-mono text-purple-200">{maskedAdminEmail}</span>
+                      <span className="font-mono text-sky-300">{maskedAdminEmail}</span>
                       ). Codes are never displayed on this screen.
                     </span>
                   </div>
@@ -828,7 +813,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                       Authorized Administrator Email
                     </label>
                     <div className="relative">
-                      <Mail className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+                      <Mail className="w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
                       <input
                         id="recovery-admin-email"
                         type="email"
@@ -839,7 +824,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                           if (error) setError(null);
                         }}
                         placeholder="Enter your authorized Admin Settings email"
-                        className="w-full pl-10 pr-4 py-3 rounded-xl border border-purple-500/35 bg-[#131742] text-sm text-white placeholder:text-slate-500 focus:border-purple-400 focus:outline-none"
+                        className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-700 bg-[#0F172A] text-sm text-white placeholder:text-slate-500 focus:border-sky-400 focus:outline-none"
                       />
                     </div>
                   </div>
@@ -849,7 +834,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                       <button
                         type="submit"
                         disabled={sendingEmail || resendCooldown > 0}
-                        className="w-full py-3.5 px-5 rounded-xl bg-gradient-to-r from-[#7C3AED] to-[#4F46E5] hover:from-[#8B5CF6] hover:to-[#6366F1] disabled:opacity-60 text-white font-bold text-sm flex items-center justify-center gap-2 transition-all cursor-pointer"
+                        className="w-full py-3 px-5 rounded-xl bg-sky-600 hover:bg-sky-500 disabled:opacity-60 text-white font-bold text-sm flex items-center justify-center gap-2 transition-colors cursor-pointer"
                       >
                         <Send className="w-4 h-4" />
                         {sendingEmail
@@ -863,7 +848,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                         type="button"
                         disabled={sendingEmail || resendCooldown > 0}
                         onClick={handleSendOtpViaVerifiedGoogle}
-                        className="w-full py-2.5 px-4 rounded-xl bg-[#131742] hover:bg-[#1A2056] border border-purple-500/35 disabled:opacity-60 text-xs font-semibold text-slate-200 flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                        className="w-full py-2.5 px-4 rounded-xl bg-[#162032] hover:bg-[#1E293B] border border-slate-700 disabled:opacity-60 text-xs font-semibold text-slate-200 flex items-center justify-center gap-2 transition-colors cursor-pointer"
                       >
                         <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" />
                         Or Verify Authorized Google Account &amp; Send via Gmail
@@ -874,7 +859,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                       type="button"
                       disabled={sendingEmail || resendCooldown > 0}
                       onClick={handleSendOtpViaVerifiedGoogle}
-                      className="w-full py-3.5 px-5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 disabled:opacity-60 text-white font-bold text-sm shadow-[0_0_20px_rgba(16,185,129,0.3)] flex items-center justify-center gap-2 transition-all cursor-pointer"
+                      className="w-full py-3 px-5 rounded-xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-60 text-white font-bold text-sm flex items-center justify-center gap-2 transition-colors cursor-pointer"
                     >
                       <Send className="w-4 h-4" />
                       {sendingEmail
@@ -892,16 +877,16 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                         setError(null);
                         setForgotStep('verify');
                       }}
-                      className="text-xs font-semibold text-slate-400 hover:text-purple-300 underline cursor-pointer"
+                      className="text-xs font-semibold text-slate-400 hover:text-sky-300 underline cursor-pointer"
                     >
                       Already received the 6-digit code in your inbox? Enter it here
                     </button>
                   </div>
                 </form>
               ) : (
-                /* Step 2: Enter Code from Email Inbox & Set New Password (NO OTP Displayed, NO Auto-Fill) */
+                /* Step 2: Enter Code from Email Inbox & Set New Password */
                 <form onSubmit={handleVerifyOtpAndReset} className="mt-6 space-y-4">
-                  <div className="flex items-center justify-between border-b border-purple-500/20 pb-2">
+                  <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
                     <span className="text-sm font-bold text-white">
                       Step 2: Check Email &amp; Reset Password
                     </span>
@@ -911,16 +896,16 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                         setForgotStep('none');
                         setError(null);
                       }}
-                      className="text-xs font-bold text-purple-400 hover:text-purple-300 cursor-pointer"
+                      className="text-xs font-bold text-sky-400 hover:text-sky-300 cursor-pointer"
                     >
                       Back to Login
                     </button>
                   </div>
 
-                  <div className="p-3.5 rounded-2xl bg-purple-500/10 border border-purple-500/35 flex items-center justify-between gap-3 text-xs">
+                  <div className="p-3.5 rounded-xl bg-sky-500/10 border border-sky-500/25 flex items-center justify-between gap-3 text-xs">
                     <div className="text-slate-300 leading-relaxed">
                       Enter the 6-digit code delivered to{' '}
-                      <span className="font-mono font-bold text-purple-200">
+                      <span className="font-mono font-bold text-sky-300">
                         {sentMaskedEmail || maskedAdminEmail}
                       </span>
                       .
@@ -933,7 +918,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                           ? void handleSendOtpViaSmtp()
                           : void handleSendOtpViaVerifiedGoogle()
                       }
-                      className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-[#1A2056] hover:bg-[#232B70] disabled:opacity-50 border border-purple-400/35 text-[11px] font-bold text-purple-200 whitespace-nowrap shrink-0 cursor-pointer"
+                      className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg bg-[#162032] hover:bg-[#1E293B] disabled:opacity-50 border border-slate-700 text-[11px] font-bold text-sky-300 whitespace-nowrap shrink-0 cursor-pointer"
                     >
                       <RefreshCw className="w-3 h-3" />
                       {resendCooldown > 0 ? `Resend (${resendCooldown}s)` : 'Resend'}
@@ -959,7 +944,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                         setEnteredOtp(e.target.value.replace(/\D/g, '').slice(0, 6))
                       }
                       placeholder="• • • • • •"
-                      className="w-full py-3 px-4 text-center font-mono font-extrabold tracking-[0.4em] text-base rounded-xl border border-purple-500/35 bg-[#131742] text-white focus:outline-none focus:border-purple-400"
+                      className="w-full py-3 px-4 text-center font-mono font-extrabold tracking-[0.4em] text-base rounded-xl border border-slate-700 bg-[#0F172A] text-white focus:outline-none focus:border-sky-400"
                     />
                   </div>
 
@@ -971,7 +956,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                       value={newPassword}
                       onChange={(e) => setNewPassword(e.target.value)}
                       placeholder="New password (min 8 chars)"
-                      className="w-full py-2.5 px-3.5 rounded-xl border border-purple-500/35 bg-[#131742] text-xs text-white focus:outline-none focus:border-purple-400"
+                      className="w-full py-2.5 px-3.5 rounded-xl border border-slate-700 bg-[#0F172A] text-xs text-white focus:outline-none focus:border-sky-400"
                     />
                     <input
                       type="password"
@@ -980,14 +965,14 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                       value={confirmNewPassword}
                       onChange={(e) => setConfirmNewPassword(e.target.value)}
                       placeholder="Confirm new password"
-                      className="w-full py-2.5 px-3.5 rounded-xl border border-purple-500/35 bg-[#131742] text-xs text-white focus:outline-none focus:border-purple-400"
+                      className="w-full py-2.5 px-3.5 rounded-xl border border-slate-700 bg-[#0F172A] text-xs text-white focus:outline-none focus:border-sky-400"
                     />
                   </div>
 
                   <button
                     type="submit"
                     disabled={isSubmitting}
-                    className="w-full py-3.5 px-6 rounded-xl bg-gradient-to-r from-[#7C3AED] to-[#4F46E5] hover:from-[#8B5CF6] hover:to-[#6366F1] disabled:opacity-60 text-white font-bold text-sm flex items-center justify-center gap-2 transition-colors cursor-pointer"
+                    className="w-full py-3 px-6 rounded-xl bg-sky-600 hover:bg-sky-500 disabled:opacity-60 text-white font-bold text-sm flex items-center justify-center gap-2 transition-colors cursor-pointer"
                   >
                     <CheckCircle2 className="w-4 h-4" />
                     {isSubmitting
@@ -997,16 +982,12 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                 </form>
               )}
 
-              <div className="mt-6 flex items-center justify-center gap-2 text-xs text-slate-400">
-                <ShieldCheck className="w-4 h-4 text-purple-400" />
-                <span>Your data is protected with server-verified security</span>
+              <div className="mt-7 flex items-center justify-center gap-2 text-xs text-slate-400">
+                <ShieldCheck className="w-4 h-4 text-purple-400 shrink-0" />
+                <span>Your data is safe and secure with ExamFlow</span>
               </div>
-            </div>
-          </div>
         </div>
       </div>
-
-      <GlobalFooter />
     </div>
   );
 };

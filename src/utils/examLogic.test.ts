@@ -230,17 +230,22 @@ test('mergeAuthoritativeAdminState keeps Admin data permanent across devices and
   assert.equal(afterAdminAddStudent.adminUpdatedAt, 6000);
 });
 
-test('UI_THEME_TEMPLATES enforces single permanent Amethyst & Cobalt (Purple & Royal Blue) theme', async () => {
+test('UI_THEME_TEMPLATES enforces single permanent Amethyst Midnight Dark theme', async () => {
   const { UI_THEME_TEMPLATES, resolveUiTheme, DEFAULT_UI_THEME } = await import(
     './uiThemes.ts'
   );
   assert.equal(UI_THEME_TEMPLATES.length, 1);
   assert.equal(UI_THEME_TEMPLATES[0].id, 'amethyst-cobalt');
-  assert.equal(UI_THEME_TEMPLATES[0].name, 'Amethyst & Cobalt');
+  assert.equal(UI_THEME_TEMPLATES[0].isLight, false);
 
-  const resolved = resolveUiTheme('any-other-theme');
-  assert.equal(resolved.id, DEFAULT_UI_THEME);
-  assert.equal(resolved.isLight, false);
+  const fallback = resolveUiTheme('any-other-theme');
+  assert.equal(fallback.id, DEFAULT_UI_THEME);
+  assert.equal(fallback.id, 'amethyst-cobalt');
+  assert.equal(fallback.isLight, false);
+
+  const forcedDark = resolveUiTheme('soft-neumorphic');
+  assert.equal(forcedDark.id, 'amethyst-cobalt');
+  assert.equal(forcedDark.isLight, false);
 });
 
 test('evaluateProgrammingSubmission executes all 3 C programs from Hard_C-programs PDF accurately', () => {
@@ -999,7 +1004,7 @@ test('ServerAdminAuthService enforces scrypt hashing, dynamic Admin Settings ema
 
     const setup = auth.setupInitialPassword('tarunkumarv2008@gmail.com', 'StrongInit#2026', 'StrongInit#2026');
     assert.equal(setup.ok, true);
-    assert.ok(setup.token && setup.token.length === 64);
+    assert.ok(setup.token && setup.token.includes('.') && setup.token.length >= 80);
     assert.equal(auth.needsInitialSetup(), false);
 
     // Second setup attempt must be permanently blocked

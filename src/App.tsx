@@ -1,6 +1,9 @@
 import React, { useState, useEffect, Suspense, lazy } from 'react';
 import { examStore } from './services/examStore.ts';
-import { resolveUiTheme } from './utils/uiThemes.ts';
+import {
+  DEFAULT_UI_THEME,
+  applyUiThemeToDocument,
+} from './utils/uiThemes.ts';
 import { WelcomeLandingPage } from './components/welcome/WelcomeLandingPage.tsx';
 import { AuthPage } from './components/auth/AuthPage.tsx';
 
@@ -101,8 +104,8 @@ class PageErrorBoundary extends React.Component<
   render() {
     if (this.state.hasError) {
       return (
-        <div className="max-w-xl mx-auto my-12 rounded-3xl bg-[#0E1132] border border-rose-500/40 p-8 text-center space-y-4 shadow-xl">
-          <h2 className="text-lg font-extrabold text-white">
+        <div className="max-w-xl mx-auto my-12 rounded-2xl bg-[#111827] border border-rose-500/35 p-8 text-center space-y-4">
+          <h2 className="text-lg font-bold text-white">
             Something went wrong loading this view
           </h2>
           <p className="text-xs text-slate-300 leading-relaxed">
@@ -111,7 +114,7 @@ class PageErrorBoundary extends React.Component<
           <button
             type="button"
             onClick={() => this.setState({ hasError: false, message: '' })}
-            className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-[#7C3AED] to-[#4F46E5] text-white text-xs font-bold cursor-pointer"
+            className="px-5 py-2.5 rounded-lg bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold cursor-pointer transition-colors"
           >
             Retry View
           </button>
@@ -124,19 +127,62 @@ class PageErrorBoundary extends React.Component<
 
 const PageLoader: React.FC = () => (
   <div className="flex items-center justify-center min-h-[260px] w-full">
-    <div className="flex items-center gap-3 px-5 py-3 rounded-2xl bg-[#0E1132] border border-purple-500/30 text-xs font-bold text-purple-200">
-      <span className="w-4 h-4 rounded-full border-2 border-purple-400 border-t-transparent animate-spin" />
-      <span>Loading module...</span>
+    <div className="flex items-center gap-3 px-4 py-2.5 rounded-xl bg-[#111827] border border-slate-800 text-xs font-semibold text-slate-300">
+      <span className="w-4 h-4 rounded-full border-2 border-sky-400 border-t-transparent animate-spin" />
+      <span>Loading workspace...</span>
     </div>
   </div>
 );
 
+const ACTIVE_TAB_STORAGE_KEY = 'examflow_active_tab_v1';
+const VALID_WORKSPACE_TABS = new Set([
+  'admin-dashboard',
+  'admin-exams',
+  'admin-questions',
+  'admin-subjects',
+  'admin-students',
+  'admin-evaluations',
+  'admin-leaderboard',
+  'admin-certificates',
+  'admin-violations',
+  'admin-settings',
+  'student-dashboard',
+  'student-exams',
+  'student-upcoming',
+  'student-history',
+  'student-results',
+  'student-certificates',
+  'student-profile',
+]);
+
+function readStoredActiveTab(defaultTab: string): string {
+  try {
+    if (typeof window !== 'undefined') {
+      const saved = window.localStorage.getItem(ACTIVE_TAB_STORAGE_KEY);
+      if (saved && VALID_WORKSPACE_TABS.has(saved.trim())) {
+        return saved.trim();
+      }
+    }
+  } catch {
+    // ignore storage errors
+  }
+  return defaultTab;
+}
+
 export function App() {
   const [storeState, setStoreState] = useState(() => examStore.getState());
+  const [isRestoringSession, setIsRestoringSession] = useState<boolean>(
+    () => !examStore.getState().isAuthenticated && examStore.hasAdminSessionHint()
+  );
   const [showWelcomePage, setShowWelcomePage] = useState<boolean>(true);
   const [authInitialRole, setAuthInitialRole] = useState<'admin' | 'student'>('admin');
 
-  const [currentTab, setCurrentTab] = useState<string>('admin-dashboard');
+  const [currentTab, setCurrentTab] = useState<string>(() => {
+    const init = examStore.getState();
+    const fallback =
+      init.currentUser.role === 'student' ? 'student-dashboard' : 'admin-dashboard';
+    return readStoredActiveTab(fallback);
+  });
   const [selectedQuestionExamId, setSelectedQuestionExamId] = useState<string | undefined>(
     undefined
   );
@@ -153,20 +199,43 @@ export function App() {
     return unsub;
   }, []);
 
-  // Sync UI Theme Color & Dark Mode on root html element across all pages
-  const activeUiThemeObj = resolveUiTheme(storeState.settings.uiTheme);
-  const isDarkMode = !activeUiThemeObj.isLight;
+  // Automatically restore server-verified persistent Admin session cookie on page reload / browser reopen
+  useEffect(() => {
+    let active = true;
+    if (!examStore.getState().isAuthenticated) {
+      examStore
+        .restoreAdminSessionFromServer()
+        .finally(() => {
+          if (active) {
+            setIsRestoringSession(false);
+          }
+        });
+    } else {
+      setIsRestoringSession(false);
+    }
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  // Remember active workspace tab while signed in so refreshes stay on the exact same screen
+  useEffect(() => {
+    if (!storeState.isAuthenticated) return;
+    try {
+      window.localStorage.setItem(ACTIVE_TAB_STORAGE_KEY, currentTab);
+    } catch {
+      // ignore
+    }
+  }, [storeState.isAuthenticated, currentTab]);
+
+  // Permanently enforce the decided Amethyst Midnight Dark UI across all pages
+  const isDarkMode = true;
   const accentColor = storeState.settings.accentColor || 'blue';
 
   useEffect(() => {
-    document.documentElement.classList.toggle('dark', isDarkMode);
+    applyUiThemeToDocument(DEFAULT_UI_THEME);
     document.documentElement.setAttribute('data-accent', accentColor);
-    document.documentElement.setAttribute('data-ui-theme', activeUiThemeObj.id);
-    document.documentElement.setAttribute(
-      'data-theme-mode',
-      activeUiThemeObj.isLight ? 'light' : 'dark'
-    );
-  }, [isDarkMode, accentColor, activeUiThemeObj.id, activeUiThemeObj.isLight]);
+  }, [accentColor]);
 
   // Poll for Timed Auto-Publishing of scheduled exam results every 30 seconds (paused in background tabs)
   useEffect(() => {
@@ -197,6 +266,17 @@ export function App() {
   // STAGE 1 & STAGE 2: UNAUTHENTICATED WORKFLOW
   // =========================================================
   if (!storeState.isAuthenticated) {
+    if (isRestoringSession) {
+      return (
+        <div className="min-h-screen bg-[#07081B] text-slate-100 flex items-center justify-center">
+          <div className="flex items-center gap-3 px-5 py-3 rounded-2xl bg-[#0E1132] border border-purple-500/30 text-xs font-bold text-slate-200">
+            <span className="w-4 h-4 rounded-full border-2 border-purple-400 border-t-transparent animate-spin" />
+            <span>Restoring your ExamFlow session...</span>
+          </div>
+        </div>
+      );
+    }
+
     if (showWelcomePage) {
       return (
         <PageErrorBoundary resetKey="welcome">
@@ -271,6 +351,11 @@ export function App() {
         onLogout={() => {
           setActiveExamSessionId(null);
           setViewingResultAttemptId(null);
+          try {
+            window.localStorage.removeItem(ACTIVE_TAB_STORAGE_KEY);
+          } catch {
+            // ignore
+          }
           examStore.logout();
           setShowWelcomePage(false);
         }}

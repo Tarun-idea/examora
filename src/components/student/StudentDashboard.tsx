@@ -1430,190 +1430,186 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
       : 0;
 
   return (
-    <div className="space-y-6 max-w-[1480px] w-full mx-auto">
-      {/* Student Greeting Header (Matching "Welcome back, Tamilselvan! 👋" in Template) */}
-      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+    <div className="space-y-6 max-w-[1440px] w-full mx-auto">
+      {/* Student Workspace Header */}
+      <div className="flex flex-col md:flex-row items-start md:items-end justify-between gap-4 pb-2 border-b border-slate-800/80">
         <div>
-          <div className="text-xs font-mono text-purple-300 font-semibold">
+          <div className="text-xs font-mono text-sky-400 font-semibold">
             {currentUser.studentId || 'STU-2026-001'} · Section{' '}
             {effectiveSection} ·{' '}
             {currentUser.department || 'Computer Science'}
           </div>
-          <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight mt-0.5">
-            Welcome back, {currentUser.name}! <span aria-hidden="true">👋</span>
+          <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight mt-1">
+            Welcome back, {currentUser.name}
           </h1>
           <p className="text-xs sm:text-sm text-slate-400 mt-1">
-            Keep going! You&apos;re doing great — launch your proctored examinations
-            and review your published certificates.
+            Review assigned examinations, download Hall Tickets, and inspect published results.
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2.5 shrink-0">
           <button
             type="button"
             onClick={() => onSelectTab('student-profile')}
-            className="px-4 py-2.5 rounded-xl bg-[#131742] hover:bg-[#1C225C] border border-purple-500/35 text-white text-xs font-bold transition-colors cursor-pointer whitespace-nowrap"
+            className="px-4 py-2.5 rounded-xl bg-[#162032] hover:bg-[#1E293B] border border-slate-700 text-slate-100 text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap"
           >
-            Edit Student Profile
+            Edit Profile
           </button>
           <button
             type="button"
             onClick={() => onSelectTab('student-results')}
-            className="px-4 py-2.5 rounded-xl bg-gradient-to-r from-[#7C3AED] to-[#4F46E5] text-white text-xs font-bold shadow-[0_0_20px_rgba(124,58,237,0.45)] transition-colors cursor-pointer whitespace-nowrap"
+            className="px-4 py-2.5 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold transition-colors cursor-pointer whitespace-nowrap"
           >
             View My Results
           </button>
         </div>
       </div>
 
-      {/* 4 Cosmic KPI Cards (Matching Top-Right Panel of Template) */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-        <div className="rounded-2xl bg-gradient-to-b from-[#131744] to-[#0C0F2D] p-5 border border-purple-500/30 shadow-lg">
-          <div className="flex items-start justify-between">
-            <span className="text-xs font-semibold text-slate-300">
+      {/* 4 Crisp Student Metric Cards */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="rounded-2xl bg-[#111827] p-5 border border-slate-800">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-slate-400">
               Total Attempts
             </span>
-            <div className="w-10 h-10 rounded-xl bg-purple-500/20 border border-purple-400/30 text-purple-300 flex items-center justify-center">
-              <Play className="w-5 h-5" />
-            </div>
+            <Play className="w-4 h-4 text-sky-400" />
           </div>
-          <div className="text-3xl font-extrabold text-white font-mono tabular-nums mt-2">
+          <div className="text-3xl font-extrabold text-white font-mono tabular-nums mt-2.5">
             {myAttempts.length}
           </div>
-          <div className="text-xs font-bold text-emerald-400 mt-2 font-mono">
-            ↑ {assignedExams.length} Assigned
+          <div className="text-[11px] font-medium text-slate-400 mt-1.5 font-mono">
+            {assignedExams.length} exam{assignedExams.length === 1 ? '' : 's'} assigned
           </div>
         </div>
 
-        <div className="rounded-2xl bg-gradient-to-b from-[#131744] to-[#0C0F2D] p-5 border border-purple-500/30 shadow-lg">
-          <div className="flex items-start justify-between">
-            <span className="text-xs font-semibold text-slate-300">
-              Exams Joined
+        <div className="rounded-2xl bg-[#111827] p-5 border border-slate-800">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-slate-400">
+              Assigned Cohort
             </span>
-            <div className="w-10 h-10 rounded-xl bg-amber-500/20 border border-amber-400/30 text-amber-300 flex items-center justify-center">
-              <Trophy className="w-5 h-5" />
-            </div>
+            <Trophy className="w-4 h-4 text-amber-400" />
           </div>
-          <div className="text-3xl font-extrabold text-white font-mono tabular-nums mt-2">
+          <div className="text-3xl font-extrabold text-white font-mono tabular-nums mt-2.5">
             {assignedExams.length}
           </div>
-          <div className="text-xs font-bold text-emerald-400 mt-2 font-mono">
-            ↑ Section {effectiveSection}
+          <div className="text-[11px] font-medium text-slate-400 mt-1.5 font-mono">
+            Section {effectiveSection} schedule
           </div>
         </div>
 
-        <div className="rounded-2xl bg-gradient-to-b from-[#131744] to-[#0C0F2D] p-5 border border-purple-500/30 shadow-lg">
-          <div className="flex items-start justify-between">
-            <span className="text-xs font-semibold text-slate-300">
+        <div className="rounded-2xl bg-[#111827] p-5 border border-slate-800">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-slate-400">
               Certificates Earned
             </span>
-            <div className="w-10 h-10 rounded-xl bg-cyan-500/20 border border-cyan-400/30 text-cyan-300 flex items-center justify-center">
-              <Award className="w-5 h-5" />
-            </div>
+            <Award className="w-4 h-4 text-emerald-400" />
           </div>
-          <div className="text-3xl font-extrabold text-white font-mono tabular-nums mt-2">
+          <div className="text-3xl font-extrabold text-white font-mono tabular-nums mt-2.5">
             {myCertificates.length}
           </div>
-          <div className="text-xs font-bold text-emerald-400 mt-2 font-mono">
-            ↑ Auto-Verified
+          <div className="text-[11px] font-medium text-emerald-400 mt-1.5">
+            Verified merit records
           </div>
         </div>
 
-        <div className="rounded-2xl bg-gradient-to-b from-[#131744] to-[#0C0F2D] p-5 border border-purple-500/30 shadow-lg">
-          <div className="flex items-start justify-between">
-            <span className="text-xs font-semibold text-slate-300">
-              Accuracy
+        <div className="rounded-2xl bg-[#111827] p-5 border border-slate-800">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-semibold text-slate-400">
+              Average Accuracy
             </span>
-            <div className="w-10 h-10 rounded-xl bg-emerald-500/20 border border-emerald-400/30 text-emerald-300 flex items-center justify-center">
-              <CheckCircle2 className="w-5 h-5" />
-            </div>
+            <CheckCircle2 className="w-4 h-4 text-sky-400" />
           </div>
-          <div className="text-3xl font-extrabold text-white font-mono tabular-nums mt-2">
+          <div className="text-3xl font-extrabold text-white font-mono tabular-nums mt-2.5">
             {avgPercentage}%
           </div>
-          <div className="text-xs font-bold text-emerald-400 mt-2 font-mono">
-            ↑ Published Score
+          <div className="text-[11px] font-medium text-slate-400 mt-1.5">
+            Across published results
           </div>
         </div>
       </div>
 
-      {/* Middle Row: "Your Progress" Circular Gauge & Bars + "Next Examination" Glowing Trophy Card */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        <div className="lg:col-span-8 rounded-3xl bg-gradient-to-b from-[#11153C] to-[#0B0E2A] border border-purple-500/30 p-6 shadow-xl">
-          <h2 className="text-base font-extrabold text-white mb-5">
-            Your Progress
+      {/* Middle Row: Progress Summary + Next Examination Spotlight */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+        <div className="lg:col-span-8 rounded-2xl bg-[#111827] border border-slate-800 p-6">
+          <h2 className="text-sm font-bold text-white mb-5">
+            Academic Progress Summary
           </h2>
           <div className="grid grid-cols-1 md:grid-cols-12 gap-6 items-center">
             <div className="md:col-span-4 flex flex-col items-center justify-center text-center">
-              <div className="relative w-32 h-32 flex items-center justify-center">
+              <div className="relative w-28 h-28 flex items-center justify-center">
                 <svg className="w-full h-full -rotate-90" viewBox="0 0 120 120">
                   <circle
                     cx="60"
                     cy="60"
                     r="50"
-                    stroke="var(--theme-border)"
-                    strokeWidth="10"
+                    stroke="rgba(148, 163, 184, 0.16)"
+                    strokeWidth="9"
                     fill="none"
                   />
                   <circle
                     cx="60"
                     cy="60"
                     r="50"
-                    stroke="var(--theme-accent)"
-                    strokeWidth="10"
+                    stroke="#8B5CF6"
+                    strokeWidth="9"
                     strokeDasharray="314"
                     strokeDashoffset={314 - (314 * studentProgressPct) / 100}
                     strokeLinecap="round"
                     fill="none"
                   />
                 </svg>
-                <span className="absolute text-2xl font-extrabold text-white font-mono">
+                <span className="absolute text-2xl font-extrabold text-white font-mono tabular-nums">
                   {studentProgressPct}%
                 </span>
               </div>
-              <div className="text-xs font-bold text-slate-300 mt-2">
-                Overall Progress
+              <div className="text-xs font-semibold text-slate-300 mt-2">
+                Completion Rate
               </div>
             </div>
 
             <div className="md:col-span-8 space-y-3.5">
               <div>
-                <div className="flex items-center justify-between text-xs font-bold text-slate-200 mb-1.5">
+                <div className="flex items-center justify-between text-xs font-semibold text-slate-200 mb-1.5">
                   <span>
-                    Assigned Examinations Attempted ({myAttempts.length}/
-                    {assignedExams.length})
+                    Examinations Attempted ({myAttempts.length}/{assignedExams.length})
                   </span>
-                  <span className="font-mono">{studentProgressPct}%</span>
+                  <span className="font-mono tabular-nums text-slate-400">
+                    {studentProgressPct}%
+                  </span>
                 </div>
-                <div className="h-2 rounded-full bg-[#1B2054] overflow-hidden">
+                <div className="h-1.5 rounded-full bg-slate-800 overflow-hidden">
                   <div
-                    className="h-full rounded-full bg-gradient-to-r from-purple-500 to-indigo-400 transition-all"
+                    className="h-full rounded-full bg-sky-500 transition-all"
                     style={{ width: `${studentProgressPct}%` }}
                   />
                 </div>
               </div>
               <div>
-                <div className="flex items-center justify-between text-xs font-bold text-slate-200 mb-1.5">
+                <div className="flex items-center justify-between text-xs font-semibold text-slate-200 mb-1.5">
                   <span>Published Results Accuracy</span>
-                  <span className="font-mono">{avgPercentage}%</span>
+                  <span className="font-mono tabular-nums text-slate-400">
+                    {avgPercentage}%
+                  </span>
                 </div>
-                <div className="h-2 rounded-full bg-[#1B2054] overflow-hidden">
+                <div className="h-1.5 rounded-full bg-slate-800 overflow-hidden">
                   <div
-                    className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-cyan-400 transition-all"
+                    className="h-full rounded-full bg-emerald-500 transition-all"
                     style={{ width: `${avgPercentage}%` }}
                   />
                 </div>
               </div>
               <div>
-                <div className="flex items-center justify-between text-xs font-bold text-slate-200 mb-1.5">
+                <div className="flex items-center justify-between text-xs font-semibold text-slate-200 mb-1.5">
                   <span>
                     Merit Certificates Earned ({myCertificates.length})
                   </span>
-                  <span className="font-mono">{studentCertRatePct}%</span>
+                  <span className="font-mono tabular-nums text-slate-400">
+                    {studentCertRatePct}%
+                  </span>
                 </div>
-                <div className="h-2 rounded-full bg-[#1B2054] overflow-hidden">
+                <div className="h-1.5 rounded-full bg-slate-800 overflow-hidden">
                   <div
-                    className="h-full rounded-full bg-gradient-to-r from-purple-500 to-cyan-400 transition-all"
+                    className="h-full rounded-full bg-amber-400 transition-all"
                     style={{ width: `${studentCertRatePct}%` }}
                   />
                 </div>
@@ -1622,18 +1618,23 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
           </div>
         </div>
 
-        <div className="lg:col-span-4 rounded-3xl bg-gradient-to-br from-[#2B1B6E] via-[#1C1452] to-[#110E36] border border-purple-400/40 p-6 flex flex-col items-center justify-between text-center shadow-[0_0_35px_rgba(124,58,237,0.3)]">
-          <div className="w-16 h-16 rounded-2xl bg-amber-400/20 border border-amber-300/40 flex items-center justify-center text-amber-300 shadow-[0_0_30px_rgba(245,158,11,0.5)]">
-            <Trophy className="w-9 h-9" />
-          </div>
-          <div className="my-3">
-            <div className="text-xs font-semibold text-purple-200">
-              {upcomingExams[0] ? upcomingExams[0].title : 'Next Examination'}
+        <div className="lg:col-span-4 rounded-2xl bg-[#111827] border border-slate-800 p-6 flex flex-col justify-between gap-5">
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-sky-400">
+                Up Next
+              </span>
+              <Calendar className="w-4 h-4 text-slate-400" />
             </div>
-            <div className="text-xl font-extrabold text-white font-mono mt-1">
-              {upcomingExams[0]
-                ? `${upcomingExams[0].durationMinutes} mins · Sec ${effectiveSection}`
-                : 'Ready to Start'}
+            <div>
+              <h3 className="text-base font-bold text-white leading-snug">
+                {upcomingExams[0] ? upcomingExams[0].title : 'All Caught Up'}
+              </h3>
+              <p className="text-xs text-slate-400 mt-1 font-mono tabular-nums">
+                {upcomingExams[0]
+                  ? `${upcomingExams[0].durationMinutes} mins · Section ${effectiveSection}`
+                  : 'No pending examinations right now'}
+              </p>
             </div>
           </div>
           <button
@@ -1643,9 +1644,9 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                 ? setConfirmStartExam(upcomingExams[0])
                 : onSelectTab('student-exams')
             }
-            className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-[#8B5CF6] to-[#6366F1] text-white text-xs font-bold cursor-pointer"
+            className="w-full py-2.5 px-4 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold transition-colors cursor-pointer"
           >
-            View Details →
+            {upcomingExams[0] ? 'Start Examination →' : 'Browse Examinations →'}
           </button>
         </div>
       </div>
