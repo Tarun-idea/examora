@@ -59,10 +59,12 @@ export const ExamEnvironment: React.FC<ExamEnvironmentProps> = ({
   } | null>(null);
   const [lastAutosavedAt, setLastAutosavedAt] = useState<string>('Just now');
   const [showSubmitModal, setShowSubmitModal] = useState<boolean>(false);
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
 
   // Cooldown ref to avoid duplicate simultaneous blur + visibilitychange events within 800ms
   const lastViolationTsRef = useRef<number>(0);
   const autoSubmitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isSubmittingRef = useRef<boolean>(false);
 
   // Coding editor execution state
   const [codeResults, setCodeResults] = useState<TestCaseResult[] | null>(null);
@@ -140,17 +142,27 @@ export const ExamEnvironment: React.FC<ExamEnvironmentProps> = ({
     onExit();
   }, [releaseFullscreenAndKeyboardLock, onExit]);
 
-  const handleFinalSubmit = useCallback(() => {
+  const handleFinalSubmit = useCallback(async () => {
+    if (isSubmittingRef.current) return;
+    isSubmittingRef.current = true;
+    setIsSubmitting(true);
     if (autoSubmitTimerRef.current) {
       clearTimeout(autoSubmitTimerRef.current);
       autoSubmitTimerRef.current = null;
     }
     releaseFullscreenAndKeyboardLock();
-    const submitted = examStore.submitAttempt(attempt.id);
-    if (submitted) {
-      onViewResults(submitted.id);
-    } else {
+    try {
+      const submitted = await examStore.submitAttemptAndSync(attempt.id);
+      if (submitted) {
+        onViewResults(submitted.id);
+      } else {
+        onExit();
+      }
+    } catch {
       onExit();
+    } finally {
+      isSubmittingRef.current = false;
+      setIsSubmitting(false);
     }
   }, [attempt.id, onViewResults, onExit, releaseFullscreenAndKeyboardLock]);
 
@@ -1220,10 +1232,13 @@ export const ExamEnvironment: React.FC<ExamEnvironmentProps> = ({
                 </p>
                 <button
                   type="button"
-                  onClick={handleFinalSubmit}
-                  className="w-full py-3 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-extrabold cursor-pointer"
+                  disabled={isSubmitting}
+                  onClick={() => void handleFinalSubmit()}
+                  className="w-full py-3 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white text-xs font-extrabold cursor-pointer"
                 >
-                  Submit Terminated Examination Now
+                  {isSubmitting
+                    ? 'Grading & Submitting...'
+                    : 'Submit Terminated Examination Now'}
                 </button>
               </div>
             ) : (
@@ -1269,17 +1284,19 @@ export const ExamEnvironment: React.FC<ExamEnvironmentProps> = ({
             <div className="flex items-center justify-end gap-3">
               <button
                 type="button"
+                disabled={isSubmitting}
                 onClick={() => setShowSubmitModal(false)}
-                className="px-4 py-2.5 rounded-xl border border-slate-200 text-xs font-bold text-slate-600 cursor-pointer"
+                className="px-4 py-2.5 rounded-xl border border-slate-200 text-xs font-bold text-slate-600 disabled:opacity-50 cursor-pointer"
               >
                 Return to Questions
               </button>
               <button
                 type="button"
-                onClick={handleFinalSubmit}
-                className="px-6 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-md cursor-pointer"
+                disabled={isSubmitting}
+                onClick={() => void handleFinalSubmit()}
+                className="px-6 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-60 text-white text-xs font-bold shadow-md cursor-pointer"
               >
-                Confirm &amp; Submit Now
+                {isSubmitting ? 'Grading & Submitting...' : 'Confirm & Submit Now'}
               </button>
             </div>
           </div>

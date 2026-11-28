@@ -1729,7 +1729,11 @@ export async function extractTextFromPdfFile(file: File): Promise<string> {
     const base64Pdf = arrayBufferToBase64(buffer);
     const res = await fetch('/api/parse-pdf', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Requested-With': 'ExamFlow-Client',
+      },
       body: JSON.stringify({
         base64Pdf,
         fileName: file.name,

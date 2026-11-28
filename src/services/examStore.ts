@@ -6,7 +6,6 @@ import {
   getDeterministicQuestionOrder,
   evaluateProgrammingSubmission,
 } from '../utils/examLogic.ts';
-import { loadFirebaseModule } from './firebaseLoader.ts';
 import { UiThemeId, resolveUiTheme } from '../utils/uiThemes.ts';
 
 export const ALL_SECTIONS: string[] = Array.from({ length: 12 }, (_, i) =>
@@ -101,6 +100,7 @@ export interface StudentRecord {
   isActive?: boolean;
   status: 'Active' | 'Inactive';
   password?: string;
+  hasPassword?: boolean;
   createdAt: string;
   updatedAtMs?: number;
   phone?: string;
@@ -335,6 +335,10 @@ export interface ExamStoreState {
   settingsUpdatedAt?: number;
   templateUpdatedAt?: number;
   adminUpdatedAt?: number;
+  publicSummary?: {
+    enrolledStudentsCount: number;
+    liveExamsCount: number;
+  };
 }
 
 const STORAGE_KEY = 'examflow_live_data_v2';
@@ -799,26 +803,13 @@ export function mergeSharedPlatformState(
     settingsUpdatedAt: Math.max(currentSettingsTime, incomingSettingsTime),
     templateUpdatedAt: Math.max(currentTemplateTime, incomingTemplateTime),
     adminUpdatedAt: Math.max(currentAdminTime, incomingAdminTime),
+    publicSummary: incoming.publicSummary ?? current.publicSummary,
   };
 }
 
 function createInitialSeedState(): ExamStoreState {
   const subjects: Subject[] = [];
-  const students: StudentRecord[] = [
-    {
-      id: 'stu-2025pecai',
-      studentId: '2025PECAI',
-      name: 'Student 2025PECAI',
-      email: '2025pecai@student.edu',
-      department: 'Artificial Intelligence & Data Science',
-      year: 'Year 1',
-      section: 'A',
-      status: 'Active',
-      password: '123',
-      createdAt: '2026-11-03',
-      updatedAtMs: 1000,
-    },
-  ];
+  const students: StudentRecord[] = [];
   const exams: Exam[] = [];
   const questions: Question[] = [];
   const attempts: ExamAttempt[] = [];
@@ -895,10 +886,12 @@ class ExamStore {
   private lastRemoteApiUpdatedAt = -1;
   // Server-verified Admin Bearer token held strictly in memory (never in localStorage or sessionStorage)
   private adminSessionToken: string | null = null;
-  // Set to true when server verifies the persistent HttpOnly Admin session cookie
+  // Set to true when server verifies the persistent HttpOnly Admin or Student session cookie
   private adminCookieAuthenticated = false;
-  // Non-secret UI hint indicating an Admin session was active prior to refresh so App avoids welcome flash
+  private studentCookieAuthenticated = false;
+  // Non-secret UI hint indicating a session was active prior to refresh so App avoids welcome flash
   private adminSessionHintOnBoot = false;
+  private studentSessionHintOnBoot = false;
 
   constructor() {
     this.state = this.loadFromStorage();
@@ -909,6 +902,10 @@ class ExamStore {
 
   public hasAdminSessionHint(): boolean {
     return this.adminSessionHintOnBoot;
+  }
+
+  public hasSessionHint(): boolean {
+    return this.adminSessionHintOnBoot || this.studentSessionHintOnBoot;
   }
 
   private getAdminAuthHeaders(includeJson = true): Record<string, string> {
@@ -1016,45 +1013,10 @@ class ExamStore {
   }
 
   private initCrossDeviceSync() {
-    // 1. Immediately pull fast Express /api/state (~3ms) on boot WITHOUT waiting on Firebase SDK
-    const hasLocalAdminMutations =
-      this.state.isAuthenticated &&
-      this.state.currentUser.role === 'admin' &&
-      Number(this.state.adminUpdatedAt || 0) > 0;
-    void this.syncWithRemoteNow(hasLocalAdminMutations, false);
+    // 1. Immediately pull role-scoped Express /api/state (~3ms) on boot
+    void this.syncWithRemoteNow(false, false);
 
-    // 2. Defer loading the ~1.6 MB Firebase SDK until after initial paint so Welcome/Auth screens open instantly
-    const startBackgroundFirestoreSync = () => {
-      void loadFirebaseModule()
-        .then((fb) => {
-          void fb.testFirestoreConnection();
-          fb.listenToFirestoreSyncState((remoteState) => {
-            this.applyRemoteState(remoteState);
-          });
-          void this.syncFirestoreInBackground();
-        })
-        .catch(() => {
-          // Gracefully operate with Express /api/state + localStorage fallback
-        });
-    };
-
-    if (typeof window !== 'undefined') {
-      const win = window as Window & {
-        requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => void;
-      };
-      if (typeof win.requestIdleCallback === 'function') {
-        win.requestIdleCallback(
-          () => {
-            globalThis.setTimeout(startBackgroundFirestoreSync, 1200);
-          },
-          { timeout: 2500 }
-        );
-      } else {
-        globalThis.setTimeout(startBackgroundFirestoreSync, 1800);
-      }
-    }
-
-    // 3. Lightweight Express /api/state poll every 15s (skips hidden tabs & unchanged timestamps)
+    // 2. Lightweight Express /api/state poll every 15s (skips hidden tabs & unchanged timestamps)
     setInterval(() => {
       if (typeof document !== 'undefined' && document.hidden) return;
       void this.syncWithRemoteNow(false, false);
@@ -1069,7 +1031,6 @@ class ExamStore {
         this.state.currentUser.role === 'admin' &&
         Number(this.state.adminUpdatedAt || 0) > 0;
       void this.syncWithRemoteNow(canPushAdmin, false);
-      void this.syncFirestoreInBackground();
     });
     window.addEventListener('storage', (e) => {
       if (e.key === STORAGE_KEY && e.newValue) {
@@ -1083,62 +1044,53 @@ class ExamStore {
     });
   }
 
-  private async syncFirestoreInBackground(): Promise<void> {
-    if (typeof window === 'undefined') return;
-    try {
-      const fb = await loadFirebaseModule();
-      const firestoreRes = await fb.fetchFirestoreSyncState().catch(() => null);
-      if (!firestoreRes?.state || typeof firestoreRes.state !== 'object') return;
-
-      const hasRemoteData =
-        Number(firestoreRes.state.adminUpdatedAt || 0) > 0 ||
-        (Array.isArray(firestoreRes.state.students) && firestoreRes.state.students.length > 0) ||
-        (Array.isArray(firestoreRes.state.subjects) && firestoreRes.state.subjects.length > 0) ||
-        (Array.isArray(firestoreRes.state.exams) && firestoreRes.state.exams.length > 0) ||
-        (Array.isArray(firestoreRes.state.deletedIds) && firestoreRes.state.deletedIds.length > 0);
-
-      if (hasRemoteData) {
-        this.applyRemoteState(firestoreRes.state);
-        const firestoreHasLegacyPurged =
-          Array.isArray(firestoreRes.state.questions) &&
-          firestoreRes.state.questions.some((q: any) =>
-            LEGACY_PURGED_QUESTION_IDS.has(String(q?.id || ''))
-          );
-        const firestoreHasOversizedLogo =
-          typeof firestoreRes.state.settings?.collegeLogoUrl === 'string' &&
-          firestoreRes.state.settings.collegeLogoUrl.startsWith('data:image/') &&
-          firestoreRes.state.settings.collegeLogoUrl.length > 2048;
-        const localHasCompactLogo =
-          typeof this.state.settings.collegeLogoUrl === 'string' &&
-          !this.state.settings.collegeLogoUrl.startsWith('data:image/');
-        const firestoreAdminTs = Number(firestoreRes.state.adminUpdatedAt || 0);
-        const localAdminTs = Number(this.state.adminUpdatedAt || 0);
-        if (
-          firestoreHasLegacyPurged ||
-          (firestoreHasOversizedLogo && localHasCompactLogo) ||
-          (localAdminTs > firestoreAdminTs && firestoreAdminTs > 0)
-        ) {
-          void fb.pushFirestoreSyncState(this.getSharedPayload()).catch(() => false);
-        }
-      }
-    } catch {
-      // ignore background Firestore errors
-    }
-  }
-
   private applyRemoteState(remoteState: Partial<ExamStoreState>) {
     if (!remoteState || typeof remoteState !== 'object') return;
     const beforeJson = JSON.stringify(this.getSharedPayload());
 
-    // If this device is not an Admin with newer local Admin edits, treat remote Admin collections
-    // as the single source of truth so deleted or modified Admin items never get reverted by stale local storage.
     const localAdminTime = Number(this.state.adminUpdatedAt || 0);
     const remoteAdminTime = Number(remoteState.adminUpdatedAt || 0);
     const isAdminSession =
       this.state.isAuthenticated && this.state.currentUser.role === 'admin';
+    const isStudentSession =
+      this.state.isAuthenticated && this.state.currentUser.role === 'student';
 
     let baseForMerge: Partial<ExamStoreState> = this.state;
-    if (
+    if (!this.state.isAuthenticated) {
+      // Unauthenticated public view: only branding settings + aggregate publicSummary counts
+      baseForMerge = {
+        ...createInitialSeedState(),
+        settings: remoteState.settings ?? this.state.settings,
+        publicSummary: remoteState.publicSummary ?? this.state.publicSummary,
+        settingsUpdatedAt:
+          remoteState.settingsUpdatedAt ?? this.state.settingsUpdatedAt,
+      };
+    } else if (isStudentSession) {
+      // Student session: treat server's role-scoped projection as authoritative for catalog
+      // while preserving newer local in-progress attempts/violations via updatedAtMs merge
+      baseForMerge = {
+        ...this.state,
+        students: remoteState.students ?? [],
+        subjects: remoteState.subjects ?? [],
+        exams: remoteState.exams ?? [],
+        questions: remoteState.questions ?? [],
+        attempts: this.state.attempts,
+        violations: this.state.violations,
+        certificates: remoteState.certificates ?? this.state.certificates,
+        deletedIds: remoteState.deletedIds ?? this.state.deletedIds,
+        deletedTimestamps:
+          remoteState.deletedTimestamps ?? this.state.deletedTimestamps,
+        settings: remoteState.settings ?? this.state.settings,
+        certificateTemplate:
+          remoteState.certificateTemplate ?? this.state.certificateTemplate,
+        publicSummary: remoteState.publicSummary ?? this.state.publicSummary,
+        settingsUpdatedAt:
+          remoteState.settingsUpdatedAt ?? this.state.settingsUpdatedAt,
+        templateUpdatedAt:
+          remoteState.templateUpdatedAt ?? this.state.templateUpdatedAt,
+        adminUpdatedAt: remoteAdminTime || localAdminTime,
+      };
+    } else if (
       remoteAdminTime > localAdminTime ||
       (!isAdminSession &&
         ((remoteState.students && remoteState.students.length > 0) ||
@@ -1156,6 +1108,7 @@ class ExamStore {
         settings: remoteState.settings ?? this.state.settings,
         certificateTemplate:
           remoteState.certificateTemplate ?? this.state.certificateTemplate,
+        publicSummary: remoteState.publicSummary ?? this.state.publicSummary,
         settingsUpdatedAt:
           remoteState.settingsUpdatedAt ?? this.state.settingsUpdatedAt,
         templateUpdatedAt:
@@ -1169,12 +1122,8 @@ class ExamStore {
 
     if (beforeJson !== afterJson) {
       this.isApplyingRemote = true;
-      // Refresh currentUser profile fields if logged in as a student whose record was updated
       let nextCurrentUser = this.state.currentUser;
-      if (
-        this.state.isAuthenticated &&
-        this.state.currentUser.role === 'student'
-      ) {
+      if (isStudentSession) {
         const matchedStu = merged.students.find(
           (s) =>
             s.id === this.state.currentUser.id ||
@@ -1192,6 +1141,18 @@ class ExamStore {
             department: matchedStu.department,
             year: matchedStu.year,
             section: matchedStu.section,
+            phone: matchedStu.phone,
+            dateOfBirth: matchedStu.dateOfBirth,
+            gender: matchedStu.gender,
+            cgpa: matchedStu.cgpa,
+            address: matchedStu.address,
+            city: matchedStu.city,
+            guardianName: matchedStu.guardianName,
+            guardianPhone: matchedStu.guardianPhone,
+            linkedinUrl: matchedStu.linkedinUrl,
+            githubUrl: matchedStu.githubUrl,
+            skills: matchedStu.skills,
+            bio: matchedStu.bio,
           };
         }
       }
@@ -1211,13 +1172,12 @@ class ExamStore {
 
   public async syncWithRemoteNow(
     pushBackIfLocalHasData = false,
-    includeFirestoreFetch = false
+    _includeFirestoreFetch = false
   ): Promise<void> {
     if (typeof window === 'undefined') return;
     if (this.syncInFlight && !pushBackIfLocalHasData) return;
     this.syncInFlight = true;
     try {
-      // Always fetch fast Express /api/state (~3ms) immediately without blocking on Firestore
       const apiRes = await this.fetchApiWithRetry(
         '/api/state',
         {
@@ -1236,9 +1196,6 @@ class ExamStore {
         apiUpdatedAt > 0 &&
         apiUpdatedAt === this.lastRemoteApiUpdatedAt
       ) {
-        if (includeFirestoreFetch) {
-          void this.syncFirestoreInBackground();
-        }
         return;
       }
       if (apiUpdatedAt > 0) {
@@ -1248,6 +1205,8 @@ class ExamStore {
       if (apiRes?.state && typeof apiRes.state === 'object') {
         const hasRemoteData =
           Number(apiRes.state.adminUpdatedAt || 0) > 0 ||
+          Boolean(apiRes.state.publicSummary) ||
+          Boolean(apiRes.state.settings) ||
           (Array.isArray(apiRes.state.students) && apiRes.state.students.length > 0) ||
           (Array.isArray(apiRes.state.subjects) && apiRes.state.subjects.length > 0) ||
           (Array.isArray(apiRes.state.exams) && apiRes.state.exams.length > 0) ||
@@ -1262,10 +1221,6 @@ class ExamStore {
           await this.pushStateToRemote('admin');
           return;
         }
-      }
-
-      if (includeFirestoreFetch) {
-        void this.syncFirestoreInBackground();
       }
 
       if (pushBackIfLocalHasData) {
@@ -1311,7 +1266,6 @@ class ExamStore {
         ).catch(() => null);
 
         if (apiRaw && apiRaw.status === 401) {
-          // Server rejected expired or revoked Admin session — clear session cleanly
           this.adminSessionToken = null;
           this.adminCookieAuthenticated = false;
           this.state.isAuthenticated = false;
@@ -1327,11 +1281,6 @@ class ExamStore {
         }
 
         const apiRes = apiRaw && apiRaw.ok ? await apiRaw.json().catch(() => null) : null;
-        const stateForFirestore =
-          apiRes?.state && typeof apiRes.state === 'object' ? apiRes.state : shared;
-        void loadFirebaseModule()
-          .then((fb) => fb.pushFirestoreSyncState(stateForFirestore))
-          .catch(() => false);
         if (apiRes?.state && typeof apiRes.state === 'object') {
           if (apiRes.updatedAt) {
             this.lastRemoteApiUpdatedAt = Number(apiRes.updatedAt);
@@ -1339,9 +1288,11 @@ class ExamStore {
           this.applyRemoteState(apiRes.state);
         }
       } else {
-        // Student role: only push student attempts/violations/certificates via server merge,
-        // and then sync the authoritative merged state to Firestore so Admin data is never altered by students.
-        const apiRes = await this.fetchApiWithRetry(
+        if (!this.studentCookieAuthenticated) {
+          return;
+        }
+        const selfId = this.state.currentUser.id;
+        const apiRaw = await this.fetchApiWithRetry(
           '/api/state/sync',
           {
             method: 'POST',
@@ -1352,26 +1303,35 @@ class ExamStore {
             body: JSON.stringify({
               role: 'student',
               state: {
-                attempts: shared.attempts,
-                violations: shared.violations,
-                certificates: shared.certificates,
-                activities: shared.activities,
+                students: shared.students.filter((s) => s.id === selfId),
+                attempts: shared.attempts.filter((a) => a.studentId === selfId),
+                violations: shared.violations.filter((v) => v.studentId === selfId),
               },
             }),
           },
           2
-        )
-          .then((r) => (r.ok ? r.json() : null))
-          .catch(() => null);
+        ).catch(() => null);
 
+        if (apiRaw && apiRaw.status === 401) {
+          this.studentCookieAuthenticated = false;
+          this.state.isAuthenticated = false;
+          this.saveToStorage();
+          for (const listener of this.listeners) {
+            try {
+              listener();
+            } catch {
+              // isolate UI listener errors
+            }
+          }
+          return;
+        }
+
+        const apiRes = apiRaw && apiRaw.ok ? await apiRaw.json().catch(() => null) : null;
         if (apiRes?.state && typeof apiRes.state === 'object') {
           if (apiRes.updatedAt) {
             this.lastRemoteApiUpdatedAt = Number(apiRes.updatedAt);
           }
           this.applyRemoteState(apiRes.state);
-          void loadFirebaseModule()
-            .then((fb) => fb.pushFirestoreSyncState(apiRes.state))
-            .catch(() => false);
         }
       }
     } catch {
@@ -1460,17 +1420,19 @@ class ExamStore {
           sessionUser.section = normalizeSection(sessionUser.section);
         }
 
-        // Admin sessions require server verification (via HttpOnly cookie in restoreSessionFromServer);
-        // never auto-authenticate Admin role from browser localStorage alone.
-        if (sessionUser.role === 'admin' && sessionAuth) {
-          this.adminSessionHintOnBoot = true;
+        // Both Admin and Student sessions require server verification via HttpOnly cookies
+        // in restoreSessionFromServer(); never trust localStorage alone for authentication.
+        if (sessionAuth) {
+          if (sessionUser.role === 'admin') {
+            this.adminSessionHintOnBoot = true;
+          } else if (sessionUser.role === 'student') {
+            this.studentSessionHintOnBoot = true;
+          }
         }
-        const safeSessionAuth =
-          sessionUser.role === 'admin' ? false : sessionAuth;
 
         return {
           ...mergedShared,
-          isAuthenticated: safeSessionAuth,
+          isAuthenticated: false,
           currentUser: sessionUser,
         };
       }
@@ -1594,83 +1556,127 @@ class ExamStore {
     };
   }
 
-  public async restoreAdminSessionFromServer(): Promise<boolean> {
+  public async restoreSessionFromServer(): Promise<boolean> {
     if (typeof window === 'undefined') return false;
-    // If already authenticated (e.g., active Student or already verified Admin), keep current session
     if (this.state.isAuthenticated) {
       this.adminSessionHintOnBoot = false;
+      this.studentSessionHintOnBoot = false;
       return true;
     }
-    try {
-      const res = await this.fetchApiWithRetry(
-        '/api/auth/admin/session',
-        {
-          method: 'GET',
-          headers: {
-            Accept: 'application/json',
-            'X-Requested-With': 'ExamFlow-Client',
-          },
-          cache: 'no-store',
-        },
-        3
-      );
-      if (res.status === 401 || res.status === 403) {
-        this.adminCookieAuthenticated = false;
-        this.adminSessionToken = null;
-        this.adminSessionHintOnBoot = false;
-        if (this.state.currentUser.role === 'admin') {
-          this.state.isAuthenticated = false;
-          this.saveToStorage();
-        }
-        return false;
-      }
-      if (!res.ok) {
-        this.adminSessionHintOnBoot = false;
-        return false;
-      }
-      const data = await res.json().catch(() => ({}));
-      if (!data?.ok || !data?.authenticated) {
-        this.adminCookieAuthenticated = false;
-        this.adminSessionToken = null;
-        this.adminSessionHintOnBoot = false;
-        if (this.state.currentUser.role === 'admin') {
-          this.state.isAuthenticated = false;
-          this.saveToStorage();
-        }
-        return false;
-      }
 
-      this.adminCookieAuthenticated = true;
-      this.adminSessionHintOnBoot = false;
-      const user: UserProfile = {
-        id: 'admin-1',
-        name:
-          data.user?.name ||
-          this.state.settings.adminName ||
-          'Administrator',
-        email:
-          data.user?.email ||
-          data.email ||
-          this.state.settings.adminEmail ||
-          'tarunkumarv2008@gmail.com',
-        role: 'admin',
-      };
-      this.state.currentUser = user;
-      this.state.isAuthenticated = true;
-      this.saveToStorage();
-      for (const listener of this.listeners) {
-        try {
-          listener();
-        } catch {
-          // isolate UI listener errors
+    const tryAdminSession = async (): Promise<boolean> => {
+      try {
+        const res = await this.fetchApiWithRetry(
+          '/api/auth/admin/session',
+          {
+            method: 'GET',
+            headers: {
+              Accept: 'application/json',
+              'X-Requested-With': 'ExamFlow-Client',
+            },
+            cache: 'no-store',
+          },
+          2
+        );
+        if (!res.ok) return false;
+        const data = await res.json().catch(() => ({}));
+        if (!data?.ok || !data?.authenticated) return false;
+
+        this.adminCookieAuthenticated = true;
+        this.studentCookieAuthenticated = false;
+        this.adminSessionHintOnBoot = false;
+        this.studentSessionHintOnBoot = false;
+        const user: UserProfile = {
+          id: 'admin-1',
+          name:
+            data.user?.name ||
+            this.state.settings.adminName ||
+            'Administrator',
+          email:
+            data.user?.email ||
+            data.email ||
+            this.state.settings.adminEmail ||
+            'tarunkumarv2008@gmail.com',
+          role: 'admin',
+        };
+        this.state.currentUser = user;
+        this.state.isAuthenticated = true;
+        this.lastRemoteApiUpdatedAt = -1;
+        await this.syncWithRemoteNow(false, false);
+        this.saveToStorage();
+        for (const listener of this.listeners) {
+          try {
+            listener();
+          } catch {
+            // isolate UI listener errors
+          }
         }
+        return true;
+      } catch {
+        return false;
       }
-      void this.syncWithRemoteNow(false, false);
-      return true;
-    } catch {
+    };
+
+    const tryStudentSession = async (): Promise<boolean> => {
+      try {
+        const res = await this.fetchApiWithRetry(
+          '/api/auth/student/session',
+          {
+            method: 'GET',
+            headers: {
+              Accept: 'application/json',
+              'X-Requested-With': 'ExamFlow-Client',
+            },
+            cache: 'no-store',
+          },
+          2
+        );
+        if (!res.ok) return false;
+        const data = await res.json().catch(() => ({}));
+        if (!data?.ok || !data?.authenticated || !data?.user) return false;
+
+        this.studentCookieAuthenticated = true;
+        this.adminCookieAuthenticated = false;
+        this.adminSessionToken = null;
+        this.adminSessionHintOnBoot = false;
+        this.studentSessionHintOnBoot = false;
+        this.state.currentUser = data.user as UserProfile;
+        this.state.isAuthenticated = true;
+        this.lastRemoteApiUpdatedAt = -1;
+        await this.syncWithRemoteNow(false, false);
+        this.saveToStorage();
+        for (const listener of this.listeners) {
+          try {
+            listener();
+          } catch {
+            // isolate UI listener errors
+          }
+        }
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    const preferStudent = this.studentSessionHintOnBoot && !this.adminSessionHintOnBoot;
+    const restored = preferStudent
+      ? (await tryStudentSession()) || (await tryAdminSession())
+      : (await tryAdminSession()) || (await tryStudentSession());
+
+    if (!restored) {
+      this.adminCookieAuthenticated = false;
+      this.studentCookieAuthenticated = false;
+      this.adminSessionToken = null;
       this.adminSessionHintOnBoot = false;
-      return false;
+      this.studentSessionHintOnBoot = false;
+      this.state.isAuthenticated = false;
+      this.saveToStorage();
     }
+    return restored;
+  }
+
+  public async restoreAdminSessionFromServer(): Promise<boolean> {
+    return this.restoreSessionFromServer();
   }
 
   public async setupInitialAdminPassword(
@@ -1796,11 +1802,7 @@ class ExamStore {
 
       this.adminSessionToken = data.token;
       this.adminCookieAuthenticated = true;
-      try {
-        await this.syncWithRemoteNow(false);
-      } catch {
-        // non-fatal: keep authenticated session even if remote sync retries in background
-      }
+      this.studentCookieAuthenticated = false;
       const user: UserProfile = {
         id: 'admin-1',
         name: this.state.settings.adminName || 'Administrator',
@@ -1809,6 +1811,12 @@ class ExamStore {
       };
       this.state.currentUser = user;
       this.state.isAuthenticated = true;
+      this.lastRemoteApiUpdatedAt = -1;
+      try {
+        await this.syncWithRemoteNow(false, false);
+      } catch {
+        // non-fatal: keep authenticated session even if remote sync retries in background
+      }
       this.saveToStorage();
       for (const listener of this.listeners) {
         try {
@@ -1820,117 +1828,91 @@ class ExamStore {
       return { success: true, user };
     }
 
-    // Student login: first pull fast Express /api/state (~3ms)
-    await this.syncWithRemoteNow(false, false);
-    const firstAttempt = this.login(identifier, password, 'student');
-    if (firstAttempt.success) {
-      return firstAttempt;
-    }
-
-    // Cross-device / cold-start fallback: pull latest students directly from Cloud Firestore and retry
-    await this.syncFirestoreInBackground();
-    return this.login(identifier, password, 'student');
-  }
-
-  public login(
-    identifier: string,
-    password: string,
-    role: 'admin' | 'student'
-  ): { success: boolean; error?: string; user?: UserProfile } {
-    const cleanId = identifier.trim().toLowerCase();
-    const compactId = cleanId.replace(/\s+/g, '');
+    // Student login: strictly verified on the server with scrypt password hashing + HttpOnly cookie
+    const cleanId = identifier.trim();
     const rawPass = password.trim();
-
     if (!cleanId) {
       return {
         success: false,
-        error:
-          role === 'admin'
-            ? 'Please enter the Administrator username.'
-            : 'Please enter your registered Student ID or Email.',
+        error: 'Please enter your registered Student ID or Email.',
       };
     }
-
-    if (role === 'admin') {
+    if (!rawPass) {
       return {
         success: false,
-        error: 'Administrator sign-in requires server verification. Please use the Login form.',
+        error: 'Please enter your Student password.',
       };
     }
 
-    // Student lookup strictly against live registered students across synced devices
-    const student = this.state.students.find((s) => {
-      const sid = s.studentId.trim().toLowerCase();
-      const sEmail = s.email.trim().toLowerCase();
-      return (
-        sid === cleanId ||
-        sid.replace(/\s+/g, '') === compactId ||
-        sEmail === cleanId
+    let res: Response;
+    try {
+      res = await this.fetchApiWithRetry(
+        '/api/auth/student/login',
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Requested-With': 'ExamFlow-Client',
+          },
+          body: JSON.stringify({ identifier: cleanId, password: rawPass }),
+        },
+        3
       );
-    });
+    } catch {
+      return {
+        success: false,
+        error: 'Could not reach the authentication server. Please try again in a moment.',
+      };
+    }
 
-    if (!student) {
+    if (res.status === 502 || res.status === 503 || res.status === 504) {
+      return {
+        success: false,
+        error: 'The authentication server is starting up. Please click Login again in a moment.',
+      };
+    }
+
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data?.ok || !data?.user) {
       return {
         success: false,
         error:
-          'Student account not found. Please check your Student ID or Email, or contact the Administrator.',
+          data?.error ||
+          'Invalid Student ID or password. Please check your credentials or contact your Administrator.',
       };
     }
 
-    if (student.status === 'Inactive') {
-      return {
-        success: false,
-        error: `Student account ${student.studentId} is currently marked Inactive. Please ask the Administrator to set your status to Active in Student Management.`,
-      };
-    }
-
-    const expectedStudentPass = (student.password || student.studentId).trim();
-    const isPasswordAccepted =
-      !rawPass ||
-      rawPass === expectedStudentPass ||
-      rawPass.toLowerCase() === expectedStudentPass.toLowerCase() ||
-      rawPass.toLowerCase() === student.studentId.trim().toLowerCase() ||
-      rawPass === '123' ||
-      rawPass.toLowerCase() === 'student123';
-
-    if (!isPasswordAccepted) {
-      return {
-        success: false,
-        error:
-          'Invalid Student password. Please enter your assigned password or your registered Student ID.',
-      };
-    }
-
-    const user: UserProfile = {
-      id: student.id,
-      name: student.name,
-      email: student.email,
-      role: 'student',
-      studentId: student.studentId,
-      department: student.department,
-      year: student.year,
-      section: student.section,
-      phone: student.phone,
-      dateOfBirth: student.dateOfBirth,
-      gender: student.gender,
-      cgpa: student.cgpa,
-      address: student.address,
-      city: student.city,
-      guardianName: student.guardianName,
-      guardianPhone: student.guardianPhone,
-      linkedinUrl: student.linkedinUrl,
-      githubUrl: student.githubUrl,
-      skills: student.skills,
-      bio: student.bio,
-    };
-
-    this.state.currentUser = user;
+    this.studentCookieAuthenticated = true;
+    this.adminCookieAuthenticated = false;
+    this.adminSessionToken = null;
+    this.state.currentUser = data.user as UserProfile;
     this.state.isAuthenticated = true;
+    this.lastRemoteApiUpdatedAt = -1;
+    try {
+      await this.syncWithRemoteNow(false, false);
+    } catch {
+      // non-fatal
+    }
     this.saveToStorage();
     for (const listener of this.listeners) {
-      listener();
+      try {
+        listener();
+      } catch {
+        // isolate UI listener errors
+      }
     }
-    return { success: true, user };
+    return { success: true, user: data.user as UserProfile };
+  }
+
+  public login(
+    _identifier: string,
+    _password: string,
+    _role: 'admin' | 'student'
+  ): { success: boolean; error?: string; user?: UserProfile } {
+    return {
+      success: false,
+      error: 'Sign-in requires server verification. Please use the Login form.',
+    };
   }
 
   public switchRoleQuick(role: 'admin' | 'student', studentId?: string) {
@@ -2148,23 +2130,58 @@ class ExamStore {
       this.adminCookieAuthenticated ||
       Boolean(tokenToRevoke) ||
       this.state.currentUser.role === 'admin';
+    const wasStudent =
+      this.studentCookieAuthenticated ||
+      this.state.currentUser.role === 'student';
+
     this.adminSessionToken = null;
     this.adminCookieAuthenticated = false;
+    this.studentCookieAuthenticated = false;
     this.adminSessionHintOnBoot = false;
-    if (wasAdmin && typeof window !== 'undefined') {
-      const headers: Record<string, string> = {
-        'X-Requested-With': 'ExamFlow-Client',
-      };
-      if (tokenToRevoke) {
-        headers.Authorization = `Bearer ${tokenToRevoke}`;
+    this.studentSessionHintOnBoot = false;
+    this.lastRemoteApiUpdatedAt = -1;
+
+    if (typeof window !== 'undefined') {
+      if (wasAdmin) {
+        const headers: Record<string, string> = {
+          'X-Requested-With': 'ExamFlow-Client',
+        };
+        if (tokenToRevoke) {
+          headers.Authorization = `Bearer ${tokenToRevoke}`;
+        }
+        void fetch('/api/auth/admin/logout', {
+          method: 'POST',
+          credentials: 'include',
+          headers,
+        }).catch(() => {});
       }
-      void fetch('/api/auth/admin/logout', {
-        method: 'POST',
-        credentials: 'include',
-        headers,
-      }).catch(() => {});
+      if (wasStudent) {
+        void fetch('/api/auth/student/logout', {
+          method: 'POST',
+          credentials: 'include',
+          headers: { 'X-Requested-With': 'ExamFlow-Client' },
+        }).catch(() => {});
+      }
+      try {
+        window.localStorage.removeItem(STORAGE_KEY);
+      } catch {
+        // ignore
+      }
     }
-    this.state.isAuthenticated = false;
+
+    // Scrub sensitive cached collections from memory on logout while retaining public branding/counts
+    const preservedSettings = this.state.settings;
+    const preservedPublicSummary = this.state.publicSummary;
+    const freshSeed = createInitialSeedState();
+    this.state = {
+      ...freshSeed,
+      settings: {
+        ...preservedSettings,
+        adminEmail: '',
+      },
+      publicSummary: preservedPublicSummary,
+      isAuthenticated: false,
+    };
     this.saveToStorage();
     for (const listener of this.listeners) {
       listener();
@@ -2248,15 +2265,18 @@ class ExamStore {
   // =========================================================
   // STUDENT MANAGEMENT
   // =========================================================
-  public addStudent(data: {
-    studentId: string;
-    name: string;
-    email: string;
-    department: string;
-    year: string;
-    section?: string;
-    password?: string;
-  }): StudentRecord {
+  public addStudent(
+    data: {
+      studentId: string;
+      name: string;
+      email: string;
+      department: string;
+      year: string;
+      section?: string;
+      password?: string;
+    },
+    silent = false
+  ): StudentRecord {
     const cleanStudentId = data.studentId.trim().toUpperCase();
     const deterministicId = makeDeterministicStudentDocId(cleanStudentId);
     const now = this.nextTimestamp();
@@ -2315,8 +2335,10 @@ class ExamStore {
       }
       return ex;
     });
-    this.logActivity('student', `New student registered: ${stu.name} (${stu.studentId})`);
-    this.notify();
+    if (!silent) {
+      this.logActivity('student', `New student registered: ${stu.name} (${stu.studentId})`);
+      this.notify('admin');
+    }
     return stu;
   }
 
@@ -2337,9 +2359,13 @@ class ExamStore {
         (s) => s.studentId.toLowerCase() === r.studentId.trim().toLowerCase()
       );
       if (!exists) {
-        this.addStudent(r);
+        this.addStudent(r, true);
         added++;
       }
+    }
+    if (added > 0) {
+      this.logActivity('student', `Bulk imported ${added} new student(s) into roster`);
+      this.notify('admin');
     }
     return added;
   }
@@ -2395,7 +2421,7 @@ class ExamStore {
       const nextPassword =
         updates.password !== undefined && updates.password.trim() !== ''
           ? updates.password.trim()
-          : s.password || nextStudentId;
+          : undefined;
       const nextStatus = updates.status || s.status;
 
       updatedStudent = {
@@ -2406,7 +2432,7 @@ class ExamStore {
         department: nextDept,
         year: nextYear,
         section: nextSection,
-        password: nextPassword,
+        ...(nextPassword ? { password: nextPassword } : {}),
         status: nextStatus,
         updatedAtMs: now,
       };
@@ -2638,6 +2664,9 @@ class ExamStore {
   }
 
   public checkTimedAutoPublish() {
+    if (!this.state.isAuthenticated || this.state.currentUser.role !== 'admin') {
+      return;
+    }
     const realNow = Date.now();
     let changed = false;
     const nextTs = this.nextTimestamp();
@@ -2654,7 +2683,7 @@ class ExamStore {
       return exam;
     });
     if (changed) {
-      this.notify();
+      this.notify('admin');
     }
   }
 
@@ -3080,6 +3109,23 @@ class ExamStore {
     );
     this.notify();
     return finalized;
+  }
+
+  /**
+   * Submits the student's exam attempt and awaits authoritative server grading
+   * so results, answer keys, and merit certificates are immediately accurate.
+   */
+  public async submitAttemptAndSync(
+    attemptId: string
+  ): Promise<ExamAttempt | undefined> {
+    const submitted = this.submitAttempt(attemptId);
+    if (!submitted) return undefined;
+    const role =
+      this.state.isAuthenticated && this.state.currentUser.role === 'admin'
+        ? 'admin'
+        : 'student';
+    await this.pushStateToRemote(role);
+    return this.state.attempts.find((a) => a.id === attemptId) || submitted;
   }
 
   // =========================================================

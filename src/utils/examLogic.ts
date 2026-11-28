@@ -746,20 +746,24 @@ export function verifyCrossDeviceStudentLogin(
     };
   }
 
+  if (!rawPass) {
+    return {
+      success: false,
+      error: 'Please enter your Student password.',
+    };
+  }
+
   const expectedPass = (student.password || student.studentId).trim();
   const isAccepted =
-    !rawPass ||
     rawPass === expectedPass ||
-    rawPass.toLowerCase() === expectedPass.toLowerCase() ||
-    rawPass.toLowerCase() === student.studentId.trim().toLowerCase() ||
-    rawPass === '123' ||
-    rawPass.toLowerCase() === 'student123';
+    (!student.password &&
+      rawPass.toLowerCase() === student.studentId.trim().toLowerCase());
 
   if (!isAccepted) {
     return {
       success: false,
       error:
-        'Invalid Student password. Please enter your assigned password or your registered Student ID.',
+        'Invalid Student password. Please enter your assigned password or contact the Administrator.',
     };
   }
 

@@ -212,8 +212,12 @@ export const AuthPage: React.FC<AuthPageProps> = ({
       return;
     }
 
-    if (role === 'admin' && !password) {
-      setError('Please enter your Administrator password.');
+    if (!password.trim()) {
+      setError(
+        role === 'admin'
+          ? 'Please enter your Administrator password.'
+          : 'Please enter your Student password.'
+      );
       return;
     }
 
@@ -722,7 +726,7 @@ export const AuthPage: React.FC<AuthPageProps> = ({
                         placeholder={
                           role === 'admin'
                             ? 'Enter Administrator password'
-                            : 'Enter password (e.g. 123 or your Student ID)'
+                            : 'Enter your assigned Student password'
                         }
                         autoComplete="current-password"
                         className="w-full pl-10 pr-10 py-2.5 rounded-xl border border-slate-700 bg-[#0F172A] text-sm text-white placeholder:text-slate-500 focus:border-sky-400 focus:outline-none transition-colors"

@@ -172,7 +172,7 @@ function readStoredActiveTab(defaultTab: string): string {
 export function App() {
   const [storeState, setStoreState] = useState(() => examStore.getState());
   const [isRestoringSession, setIsRestoringSession] = useState<boolean>(
-    () => !examStore.getState().isAuthenticated && examStore.hasAdminSessionHint()
+    () => !examStore.getState().isAuthenticated && examStore.hasSessionHint()
   );
   const [showWelcomePage, setShowWelcomePage] = useState<boolean>(true);
   const [authInitialRole, setAuthInitialRole] = useState<'admin' | 'student'>('admin');
@@ -199,12 +199,12 @@ export function App() {
     return unsub;
   }, []);
 
-  // Automatically restore server-verified persistent Admin session cookie on page reload / browser reopen
+  // Automatically restore server-verified persistent Admin or Student session cookie on page reload / browser reopen
   useEffect(() => {
     let active = true;
     if (!examStore.getState().isAuthenticated) {
       examStore
-        .restoreAdminSessionFromServer()
+        .restoreSessionFromServer()
         .finally(() => {
           if (active) {
             setIsRestoringSession(false);

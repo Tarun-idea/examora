@@ -140,13 +140,16 @@ test('mergeStudentListsCrossDevice merges Admin-registered students across devic
   const merged = mergeStudentListsCrossDevice(deviceBStudents, deviceAStudents, []);
   assert.equal(merged.length, 2);
 
-  // Student 2025pecai can login on Device B with password '123', their Student ID, or blank password
-  const loginWith123 = verifyCrossDeviceStudentLogin('2025pecai', '123', merged);
-  assert.equal(loginWith123.success, true);
-  assert.equal(loginWith123.student?.studentId, '2025PECAI');
+  // Student 2025pecai can login with their assigned password; blank or wrong password must be rejected
+  const loginWithAssigned = verifyCrossDeviceStudentLogin('2025pecai', '123', merged);
+  assert.equal(loginWithAssigned.success, true);
+  assert.equal(loginWithAssigned.student?.studentId, '2025PECAI');
 
-  const loginWithId = verifyCrossDeviceStudentLogin('2025pecai02', '2025pecai02', merged);
-  assert.equal(loginWithId.success, true);
+  const blankPasswordRejected = verifyCrossDeviceStudentLogin('2025pecai', '', merged);
+  assert.equal(blankPasswordRejected.success, false);
+
+  const wrongPasswordRejected = verifyCrossDeviceStudentLogin('2025pecai02', 'wrong-pass', merged);
+  assert.equal(wrongPasswordRejected.success, false);
 
   // Unregistered student ID is rejected
   const unregistered = verifyCrossDeviceStudentLogin('unknown999', '123', merged);
@@ -1109,6 +1112,81 @@ test('ServerAdminAuthService enforces scrypt hashing, dynamic Admin Settings ema
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('Student scrypt password hashing, signed student sessions, URL sanitization, and rate limiting enforce security controls', async () => {
+  const fs = await import('fs');
+  const os = await import('os');
+  const path = await import('path');
+  const {
+    ServerAdminAuthService,
+    hashStudentPassword,
+    isHashedStudentPassword,
+    verifyStudentPassword,
+    sanitizeSafeUrl,
+    sanitizeText,
+    SlidingWindowRateLimiter,
+  } = await import('../../serverAuth.ts');
+
+  // 1. Student scrypt password hashing & verification (zero backdoors)
+  const hash1 = hashStudentPassword('2025PECAI584');
+  const hash2 = hashStudentPassword('2025PECAI584');
+  assert.equal(isHashedStudentPassword(hash1), true);
+  assert.notEqual(hash1, hash2); // Unique random salt per hash
+  assert.equal(hash1.includes('2025PECAI584'), false); // Never plaintext
+  assert.equal(verifyStudentPassword('2025PECAI584', hash1, '2025PECAI584'), true);
+  assert.equal(verifyStudentPassword('', hash1, '2025PECAI584'), false);
+  assert.equal(verifyStudentPassword('123', hash1, '2025PECAI584'), false);
+  assert.equal(verifyStudentPassword('student123', hash1, '2025PECAI584'), false);
+
+  // 2. Signed student session token lifecycle (issue, verify, reject tamper, revoke on logout)
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'examflow-stu-sess-'));
+  try {
+    const auth = new ServerAdminAuthService(tmpDir);
+    const stuToken = auth.issueStudentSessionToken({
+      id: 'stu-001',
+      studentId: '001',
+      email: '001@student.edu',
+    });
+    assert.ok(stuToken.startsWith('stu.'));
+    const verified = auth.verifyStudentSessionToken(stuToken);
+    assert.ok(verified);
+    assert.equal(verified.id, 'stu-001');
+    assert.equal(verified.studentId, '001');
+
+    // Tampered signature must fail
+    const tampered = `${stuToken.slice(0, -4)}AAAA`;
+    assert.equal(auth.verifyStudentSessionToken(tampered), null);
+
+    // Explicit logout revokes token immediately
+    auth.revokeStudentSessionToken(stuToken);
+    assert.equal(auth.verifyStudentSessionToken(stuToken), null);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+
+  // 3. URL & text sanitization blocks javascript:/vbscript:/data: XSS vectors
+  assert.equal(sanitizeSafeUrl('javascript:alert(1)'), '');
+  assert.equal(sanitizeSafeUrl('JaVaScRiPt:alert(document.cookie)'), '');
+  assert.equal(sanitizeSafeUrl('vbscript:msgbox(1)'), '');
+  assert.equal(sanitizeSafeUrl('data:text/html,<script>alert(1)</script>'), '');
+  assert.equal(sanitizeSafeUrl('https://panimalar.ac.in'), 'https://panimalar.ac.in');
+  assert.equal(sanitizeSafeUrl('panimalar.ac.in'), 'https://panimalar.ac.in');
+  assert.equal(sanitizeSafeUrl('/assets/panimalar-crest.png', true), '/assets/panimalar-crest.png');
+  assert.equal(sanitizeSafeUrl('//evil.example/logo.png', true), '');
+  assert.equal(sanitizeText('Hello\u0000\u0007World', 8), 'HelloWor');
+
+  // 4. Sliding-window rate limiter enforces quota & returns retryAfterSec
+  const limiter = new SlidingWindowRateLimiter(3, 60_000);
+  assert.equal(limiter.check('10.0.0.1').allowed, true);
+  assert.equal(limiter.check('10.0.0.1').allowed, true);
+  assert.equal(limiter.check('10.0.0.1').allowed, true);
+  const blocked = limiter.check('10.0.0.1');
+  assert.equal(blocked.allowed, false);
+  assert.ok(blocked.retryAfterSec >= 1);
+  // Separate IP remains unaffected
+  assert.equal(limiter.check('10.0.0.2').allowed, true);
+});
+
 
 
 

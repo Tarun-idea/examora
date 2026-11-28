@@ -8,7 +8,15 @@ import { fileURLToPath } from 'url';
 import { createServer as createViteServer } from 'vite';
 import { initializeApp, getApps } from 'firebase/app';
 import { getFirestore, doc, getDoc, setDoc, setLogLevel } from 'firebase/firestore';
-import { ServerAdminAuthService } from './serverAuth.ts';
+import {
+  ServerAdminAuthService,
+  hashStudentPassword,
+  isHashedStudentPassword,
+  verifyStudentPassword,
+  sanitizeText,
+  sanitizeSafeUrl,
+  SlidingWindowRateLimiter,
+} from './serverAuth.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -226,14 +234,58 @@ const LEGACY_PURGED_QUESTION_IDS = new Set([
   'q-1793860336057-zmg',
 ]);
 
+function sanitizeStudentRecord(raw: any): any {
+  const s = raw && typeof raw === 'object' ? { ...raw } : {};
+  const cleanStudentId = sanitizeText(String(s.studentId || ''), 64).toUpperCase();
+  const rawPlainPass = typeof s.password === 'string' ? s.password.trim() : '';
+  const rawHashPass = typeof s.passwordHash === 'string' ? s.passwordHash.trim() : '';
+
+  let passwordHash = '';
+  if (rawPlainPass) {
+    passwordHash = hashStudentPassword(rawPlainPass);
+  } else if (rawHashPass) {
+    passwordHash = hashStudentPassword(rawHashPass);
+  } else if (cleanStudentId) {
+    passwordHash = hashStudentPassword(cleanStudentId);
+  }
+
+  delete s.password;
+  delete s.hasPassword;
+
+  return {
+    ...s,
+    studentId: cleanStudentId || String(s.studentId || ''),
+    name: sanitizeText(String(s.name || ''), 160) || `Student ${cleanStudentId}`,
+    email: sanitizeText(String(s.email || ''), 160),
+    department: sanitizeText(String(s.department || ''), 160),
+    year: sanitizeText(String(s.year || ''), 40),
+    section: normalizeServerSection(s.section),
+    phone: s.phone !== undefined ? sanitizeText(String(s.phone), 40) : undefined,
+    dateOfBirth:
+      s.dateOfBirth !== undefined ? sanitizeText(String(s.dateOfBirth), 40) : undefined,
+    gender: s.gender !== undefined ? sanitizeText(String(s.gender), 40) : undefined,
+    cgpa: s.cgpa !== undefined ? sanitizeText(String(s.cgpa), 20) : undefined,
+    address: s.address !== undefined ? sanitizeText(String(s.address), 300) : undefined,
+    city: s.city !== undefined ? sanitizeText(String(s.city), 100) : undefined,
+    guardianName:
+      s.guardianName !== undefined ? sanitizeText(String(s.guardianName), 160) : undefined,
+    guardianPhone:
+      s.guardianPhone !== undefined ? sanitizeText(String(s.guardianPhone), 40) : undefined,
+    linkedinUrl:
+      s.linkedinUrl !== undefined ? sanitizeSafeUrl(s.linkedinUrl, false) : undefined,
+    githubUrl:
+      s.githubUrl !== undefined ? sanitizeSafeUrl(s.githubUrl, false) : undefined,
+    skills: s.skills !== undefined ? sanitizeText(String(s.skills), 500) : undefined,
+    bio: s.bio !== undefined ? sanitizeText(String(s.bio), 1500) : undefined,
+    passwordHash,
+  };
+}
+
 function sanitizeServerStateCollections(stateObj: Record<string, any>): Record<string, any> {
   if (!stateObj || typeof stateObj !== 'object') return stateObj;
   if (Array.isArray(stateObj.students)) {
     stateObj.students = sortServerStudentsBySectionAndName(
-      stateObj.students.map((s: any) => ({
-        ...s,
-        section: normalizeServerSection(s.section),
-      }))
+      stateObj.students.map((s: any) => sanitizeStudentRecord(s))
     );
   }
   if (Array.isArray(stateObj.subjects)) {
@@ -324,6 +376,12 @@ function sanitizeServerStateCollections(stateObj: Record<string, any>): Record<s
       const { adminPassword: _removed, ...safeSettings } = stateObj.settings;
       stateObj.settings = safeSettings;
     }
+    if ('websiteUrl' in stateObj.settings) {
+      stateObj.settings = {
+        ...stateObj.settings,
+        websiteUrl: sanitizeSafeUrl(stateObj.settings.websiteUrl, false),
+      };
+    }
     const currentLogo = String(stateObj.settings.collegeLogoUrl || '').trim();
     if (
       !currentLogo ||
@@ -349,10 +407,32 @@ function sanitizeServerStateCollections(stateObj: Record<string, any>): Record<s
           Date.now(),
           Number(stateObj.settingsUpdatedAt || 0) + 1
         );
+      } else if (!currentLogo.startsWith('data:image/')) {
+        const safeLogo = sanitizeSafeUrl(currentLogo, true);
+        stateObj.settings = {
+          ...stateObj.settings,
+          collegeLogoUrl: safeLogo || '/assets/panimalar-crest.png',
+        };
       }
     }
   }
   return stateObj;
+}
+
+let needsFirestoreHashSync = false;
+
+function hasPlaintextStudentPasswords(stateObj?: Record<string, any>): boolean {
+  if (!stateObj || !Array.isArray(stateObj.students)) return false;
+  return stateObj.students.some(
+    (s: any) =>
+      s &&
+      typeof s === 'object' &&
+      ((typeof s.password === 'string' && s.password.trim().length > 0) ||
+        (typeof s.passwordHash === 'string' &&
+          s.passwordHash.trim().length > 0 &&
+          !isHashedStudentPassword(s.passwordHash)) ||
+        (!s.password && !s.passwordHash))
+  );
 }
 
 function loadServerState(): SharedSyncPayload {
@@ -369,6 +449,7 @@ function loadServerState(): SharedSyncPayload {
         const hadPlaintextPass = Boolean(
           parsed.state?.settings && 'adminPassword' in parsed.state.settings
         );
+        const hadPlaintextStudentPass = hasPlaintextStudentPasswords(parsed.state);
         const rawLogoOnDisk = String(parsed.state?.settings?.collegeLogoUrl || '').trim();
         const hadLegacyOrOversizedLogo =
           !rawLogoOnDisk ||
@@ -380,7 +461,8 @@ function loadServerState(): SharedSyncPayload {
         const serializedState = JSON.stringify(parsed.state);
         lastPersistedStateJson = serializedState;
 
-        if (hadPlaintextPass || hadLegacyOrOversizedLogo) {
+        if (hadPlaintextPass || hadLegacyOrOversizedLogo || hadPlaintextStudentPass) {
+          needsFirestoreHashSync = true;
           try {
             writeFileAtomic(STATE_FILE, JSON.stringify(parsed, null, 2));
           } catch {
@@ -448,6 +530,10 @@ function hydrateServerStateFromFirestore(): Promise<void> {
       const remoteState = JSON.parse(data.payloadJson);
       if (!hasMeaningfulState(remoteState)) return;
 
+      const remoteHadPlaintextPass =
+        hasPlaintextStudentPasswords(remoteState) ||
+        Boolean(remoteState?.settings && 'adminPassword' in remoteState.settings);
+
       const remoteUpdatedAt = Number(data.updatedAt || Date.now());
       const localHasData = hasMeaningfulState(memoryStore.state);
       const mergedState = localHasData
@@ -471,12 +557,16 @@ function hydrateServerStateFromFirestore(): Promise<void> {
         adminAuth.syncRecoveryEmail(mergedState.settings.adminEmail);
       }
 
+      const shouldMirrorCleanToFirestore =
+        shouldPushCleanedLogo || remoteHadPlaintextPass || needsFirestoreHashSync;
+      needsFirestoreHashSync = false;
+
       saveServerState(
         {
           updatedAt: Math.max(memoryStore.updatedAt || 0, remoteUpdatedAt),
           state: mergedState,
         },
-        false
+        shouldMirrorCleanToFirestore
       );
     } catch {
       // non-fatal: fall back to local cache
@@ -581,7 +671,23 @@ function mergeArrayById(
           stuIdToKey.delete(String(prevStuObj.studentId).trim().toUpperCase());
         }
       }
-      const merged = { ...prev, ...item, id };
+      const merged: any = { ...prev, ...item, id };
+      if (isStudentArray) {
+        const incomingPlain =
+          typeof item.password === 'string' ? item.password.trim() : '';
+        const incomingHash =
+          typeof item.passwordHash === 'string' ? item.passwordHash.trim() : '';
+        if (incomingPlain) {
+          merged.passwordHash = hashStudentPassword(incomingPlain);
+        } else if (incomingHash) {
+          merged.passwordHash = hashStudentPassword(incomingHash);
+        } else if (prev.passwordHash) {
+          merged.passwordHash = prev.passwordHash;
+        } else if (typeof prev.password === 'string' && prev.password.trim()) {
+          merged.passwordHash = hashStudentPassword(prev.password.trim());
+        }
+        delete merged.password;
+      }
       map.set(id, merged);
       if (normStuId) {
         stuIdToKey.set(normStuId, id);
@@ -792,13 +898,642 @@ function mergeServerStates(
 
 async function startServer() {
   const app = express();
+  app.disable('x-powered-by');
   app.set('trust proxy', 1);
   app.use(compression({ threshold: 1024 }));
   app.use(express.json({ limit: '30mb' }));
 
-  // PDF Question Paper Text Extraction API using Mozilla pdfjs-dist
+  const isHttpsRequest = (req: express.Request): boolean => {
+    if (req.secure) return true;
+    const xfProto = String(req.headers['x-forwarded-proto'] || '')
+      .split(',')[0]
+      .trim()
+      .toLowerCase();
+    if (xfProto === 'https') return true;
+    const origin = String(req.headers.origin || '').trim().toLowerCase();
+    if (origin.startsWith('https://')) return true;
+    const referer = String(req.headers.referer || '').trim().toLowerCase();
+    if (referer.startsWith('https://')) return true;
+    return false;
+  };
+
+  // Global HTTP Security Headers (omits X-Frame-Options so AI Studio preview iframe works seamlessly)
+  app.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader(
+      'Permissions-Policy',
+      'camera=(self), geolocation=(), microphone=(), payment=(), usb=()'
+    );
+    if (isHttpsRequest(req)) {
+      res.setHeader(
+        'Strict-Transport-Security',
+        'max-age=31536000; includeSubDomains'
+      );
+    }
+    next();
+  });
+
+  // Strict Same-Origin CORS Guard on all /api/* routes (never exposes wildcard ACAO)
+  app.use('/api', (req, res, next) => {
+    const originHeader = String(req.headers.origin || '').trim();
+    if (originHeader) {
+      const expectedHost = String(
+        req.headers['x-forwarded-host'] || req.headers.host || ''
+      )
+        .split(',')[0]
+        .trim()
+        .toLowerCase();
+      let originHost = '';
+      try {
+        originHost = new URL(originHeader).host.toLowerCase();
+      } catch {
+        originHost = '';
+      }
+      if (!originHost || !expectedHost || originHost !== expectedHost) {
+        res.status(403).json({
+          ok: false,
+          error: 'Cross-origin API requests are not permitted.',
+        });
+        return;
+      }
+      res.setHeader('Access-Control-Allow-Origin', originHeader);
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+      res.setHeader(
+        'Access-Control-Allow-Headers',
+        'Content-Type, Authorization, X-Requested-With'
+      );
+      res.setHeader('Vary', 'Origin');
+    }
+    if (req.method === 'OPTIONS') {
+      res.status(204).end();
+      return;
+    }
+    next();
+  });
+
+  // Per-IP Sliding-Window Rate Limiters (tuned for shared college Wi-Fi NAT networks)
+  const adminLoginLimiter = new SlidingWindowRateLimiter(15, 15 * 60 * 1000);
+  const studentLoginLimiter = new SlidingWindowRateLimiter(40, 15 * 60 * 1000);
+  const otpLimiter = new SlidingWindowRateLimiter(10, 15 * 60 * 1000);
+  const pdfParseLimiter = new SlidingWindowRateLimiter(20, 10 * 60 * 1000);
+  const syncLimiter = new SlidingWindowRateLimiter(300, 5 * 60 * 1000);
+
+  // =========================================================
+  // SECURE SERVER-SIDE AUTH, SESSION COOKIES & ROLE SCOPING
+  // =========================================================
+  const getSettingsAdminEmail = (): string | undefined =>
+    typeof memoryStore.state?.settings?.adminEmail === 'string'
+      ? memoryStore.state.settings.adminEmail
+      : undefined;
+
+  const getSettingsAdminName = (): string | undefined =>
+    typeof memoryStore.state?.settings?.adminName === 'string'
+      ? memoryStore.state.settings.adminName
+      : undefined;
+
+  const ensureHydratedIfEmpty = async () => {
+    if (!hasMeaningfulState(memoryStore.state)) {
+      await hydrateServerStateFromFirestore();
+    }
+  };
+
+  const getClientIpKey = (req: express.Request): string =>
+    String(
+      req.headers['x-forwarded-for'] ||
+        req.socket?.remoteAddress ||
+        'unknown-client'
+    )
+      .split(',')[0]
+      .trim();
+
+  const ADMIN_SESSION_COOKIE = 'examflow_admin_session';
+  const STUDENT_SESSION_COOKIE = 'examflow_student_session';
+  const SESSION_COOKIE_MAX_AGE_SECONDS = 365 * 24 * 60 * 60; // 1 year (persists until explicit Logout)
+
+  const parseCookieValue = (
+    cookieHeader: string | undefined,
+    name: string
+  ): string | undefined => {
+    if (!cookieHeader || typeof cookieHeader !== 'string') return undefined;
+    const parts = cookieHeader.split(';');
+    for (const part of parts) {
+      const eqIdx = part.indexOf('=');
+      if (eqIdx === -1) continue;
+      const key = part.slice(0, eqIdx).trim();
+      if (key === name) {
+        try {
+          return decodeURIComponent(part.slice(eqIdx + 1).trim());
+        } catch {
+          return part.slice(eqIdx + 1).trim();
+        }
+      }
+    }
+    return undefined;
+  };
+
+  const appendSetCookie = (res: express.Response, cookieValue: string) => {
+    const existing = res.getHeader('Set-Cookie');
+    if (!existing) {
+      res.setHeader('Set-Cookie', cookieValue);
+    } else if (Array.isArray(existing)) {
+      res.setHeader('Set-Cookie', [...existing, cookieValue]);
+    } else {
+      res.setHeader('Set-Cookie', [String(existing), cookieValue]);
+    }
+  };
+
+  const setSessionCookie = (
+    req: express.Request,
+    res: express.Response,
+    cookieName: string,
+    token: string
+  ) => {
+    const attrs = [
+      `${cookieName}=${encodeURIComponent(token)}`,
+      'HttpOnly',
+      'Path=/',
+      `Max-Age=${SESSION_COOKIE_MAX_AGE_SECONDS}`,
+    ];
+    if (isHttpsRequest(req)) {
+      attrs.push('Secure', 'SameSite=None', 'Partitioned');
+    } else {
+      attrs.push('SameSite=Lax');
+    }
+    appendSetCookie(res, attrs.join('; '));
+  };
+
+  const clearSessionCookie = (
+    req: express.Request,
+    res: express.Response,
+    cookieName: string
+  ) => {
+    const attrs = [
+      `${cookieName}=`,
+      'HttpOnly',
+      'Path=/',
+      'Max-Age=0',
+    ];
+    if (isHttpsRequest(req)) {
+      attrs.push('Secure', 'SameSite=None', 'Partitioned');
+    } else {
+      attrs.push('SameSite=Lax');
+    }
+    appendSetCookie(res, attrs.join('; '));
+  };
+
+  const setAdminSessionCookie = (
+    req: express.Request,
+    res: express.Response,
+    token: string
+  ) => setSessionCookie(req, res, ADMIN_SESSION_COOKIE, token);
+
+  const clearAdminSessionCookie = (
+    req: express.Request,
+    res: express.Response
+  ) => clearSessionCookie(req, res, ADMIN_SESSION_COOKIE);
+
+  const setStudentSessionCookie = (
+    req: express.Request,
+    res: express.Response,
+    token: string
+  ) => setSessionCookie(req, res, STUDENT_SESSION_COOKIE, token);
+
+  const clearStudentSessionCookie = (
+    req: express.Request,
+    res: express.Response
+  ) => clearSessionCookie(req, res, STUDENT_SESSION_COOKIE);
+
+  const verifyCookieCsrf = (req: express.Request): boolean => {
+    // Allow requests carrying our explicit non-simple custom header
+    const xrw = String(req.headers['x-requested-with'] || '').trim();
+    if (xrw === 'ExamFlow-Client') return true;
+
+    // Otherwise verify Origin strictly matches X-Forwarded-Host or Host
+    const originHeader = String(req.headers.origin || '').trim();
+    const expectedHost = String(
+      req.headers['x-forwarded-host'] || req.headers.host || ''
+    )
+      .split(',')[0]
+      .trim()
+      .toLowerCase();
+    if (!originHeader || !expectedHost) return false;
+    try {
+      const originHost = new URL(originHeader).host.toLowerCase();
+      return originHost === expectedHost;
+    } catch {
+      return false;
+    }
+  };
+
+  const resolveAdminSession = (
+    req: express.Request,
+    requireCsrfForCookie = false
+  ) => {
+    const bearerSession = adminAuth.verifyBearerHeader(req.headers.authorization);
+    if (bearerSession) return bearerSession;
+
+    const cookieToken = parseCookieValue(
+      req.headers.cookie,
+      ADMIN_SESSION_COOKIE
+    );
+    if (!cookieToken) return null;
+    if (requireCsrfForCookie && !verifyCookieCsrf(req)) {
+      return null;
+    }
+    return adminAuth.verifyToken(cookieToken);
+  };
+
+  const resolveStudentSession = (
+    req: express.Request,
+    requireCsrfForCookie = false
+  ) => {
+    const cookieToken = parseCookieValue(
+      req.headers.cookie,
+      STUDENT_SESSION_COOKIE
+    );
+    if (!cookieToken) return null;
+    if (requireCsrfForCookie && !verifyCookieCsrf(req)) {
+      return null;
+    }
+    return adminAuth.verifyStudentSessionToken(cookieToken);
+  };
+
+  const findCanonicalStudent = (
+    students: any[] | undefined,
+    id?: string,
+    studentId?: string
+  ): any | undefined => {
+    if (!Array.isArray(students)) return undefined;
+    const cleanId = String(id || '').trim();
+    const cleanStuId = String(studentId || '').trim().toLowerCase();
+    return students.find(
+      (s: any) =>
+        (cleanId && String(s?.id || '') === cleanId) ||
+        (cleanStuId &&
+          String(s?.studentId || '').trim().toLowerCase() === cleanStuId)
+    );
+  };
+
+  const stripStudentSecrets = (student: any): any => {
+    if (!student || typeof student !== 'object') return student;
+    const { password: _p, passwordHash: _ph, ...safe } = student;
+    return {
+      ...safe,
+      hasPassword: Boolean(student.passwordHash || student.password),
+    };
+  };
+
+  const buildStudentUserProfile = (student: any) => ({
+    id: student.id,
+    name: student.name,
+    email: student.email,
+    role: 'student' as const,
+    studentId: student.studentId,
+    department: student.department,
+    year: student.year,
+    section: normalizeServerSection(student.section),
+    phone: student.phone,
+    dateOfBirth: student.dateOfBirth,
+    gender: student.gender,
+    cgpa: student.cgpa,
+    address: student.address,
+    city: student.city,
+    guardianName: student.guardianName,
+    guardianPhone: student.guardianPhone,
+    linkedinUrl: student.linkedinUrl,
+    githubUrl: student.githubUrl,
+    skills: student.skills,
+    bio: student.bio,
+  });
+
+  const getPublicSummary = (stateObj: Record<string, any>) => {
+    const enrolledStudentsCount = Array.isArray(stateObj?.students)
+      ? stateObj.students.length
+      : 0;
+    const liveExamsCount = Array.isArray(stateObj?.exams)
+      ? stateObj.exams.filter(
+          (e: any) => String(e?.status || '').trim().toLowerCase() !== 'draft'
+        ).length
+      : 0;
+    return {
+      enrolledStudentsCount,
+      liveExamsCount,
+    };
+  };
+
+  const buildPublicStateView = (payload: SharedSyncPayload): SharedSyncPayload => {
+    const s = payload.state?.settings || {};
+    return {
+      updatedAt: payload.updatedAt,
+      state: {
+        subjects: [],
+        students: [],
+        exams: [],
+        questions: [],
+        attempts: [],
+        violations: [],
+        certificates: [],
+        activities: [],
+        publicSummary: getPublicSummary(payload.state),
+        settings: {
+          institutionName: s.institutionName || 'Panimalar Engineering College',
+          academicSession: s.academicSession || '2025 - 2026 Academic Year',
+          adminName: 'Administrator',
+          adminEmail: '',
+          contactPhone: s.contactPhone || '',
+          websiteUrl: s.websiteUrl || '',
+          institutionAddress: s.institutionAddress || '',
+          timezone: s.timezone || 'UTC+05:30 (Indian Standard Time)',
+          themeMode: s.themeMode || 'dark',
+          accentColor: s.accentColor || 'blue',
+          uiTheme: s.uiTheme,
+          collegeLogoUrl: s.collegeLogoUrl || '/assets/panimalar-crest.png',
+          enforceFullscreen: s.enforceFullscreen ?? true,
+          autoSubmitOnMaxViolations: s.autoSubmitOnMaxViolations ?? true,
+          maxViolationsAllowed: s.maxViolationsAllowed ?? 3,
+          webcamProctoringDefault: s.webcamProctoringDefault ?? true,
+          defaultPassingPercentage: s.defaultPassingPercentage ?? 50,
+          lateJoinRemainingTimeOnly: s.lateJoinRemainingTimeOnly ?? true,
+        },
+        settingsUpdatedAt: payload.state?.settingsUpdatedAt || 0,
+        templateUpdatedAt: 0,
+        adminUpdatedAt: 0,
+      },
+    };
+  };
+
+  const buildAdminStateView = (payload: SharedSyncPayload): SharedSyncPayload => {
+    const students = Array.isArray(payload.state?.students)
+      ? payload.state.students.map(stripStudentSecrets)
+      : [];
+    return {
+      updatedAt: payload.updatedAt,
+      state: {
+        ...payload.state,
+        students,
+        publicSummary: getPublicSummary(payload.state),
+      },
+    };
+  };
+
+  const buildStudentStateView = (
+    payload: SharedSyncPayload,
+    student: any
+  ): SharedSyncPayload => {
+    const st = payload.state || {};
+    const studentId = String(student.id);
+    const studentSection = normalizeServerSection(student.section);
+
+    const ownAttempts = Array.isArray(st.attempts)
+      ? st.attempts.filter((a: any) => String(a?.studentId || '') === studentId)
+      : [];
+    const ownAttemptExamIds = new Set<string>(
+      ownAttempts.map((a: any) => String(a?.examId || ''))
+    );
+
+    const allExams = Array.isArray(st.exams) ? st.exams : [];
+    const visibleExams = allExams.filter((ex: any) => {
+      const status = String(ex?.status || '').trim().toLowerCase();
+      if (status === 'draft') return false;
+      if (ownAttemptExamIds.has(String(ex?.id || ''))) return true;
+      const assignedIds = Array.isArray(ex?.assignedStudentIds)
+        ? ex.assignedStudentIds
+        : [];
+      const assignedCohorts = Array.isArray(ex?.assignedCohorts)
+        ? ex.assignedCohorts.map((c: any) => normalizeServerSection(String(c)))
+        : [];
+      if (assignedIds.length === 0 && assignedCohorts.length === 0) return true;
+      return (
+        assignedIds.includes(studentId) ||
+        assignedCohorts.includes(studentSection)
+      );
+    });
+    const visibleExamIds = new Set<string>(
+      visibleExams.map((ex: any) => String(ex?.id || ''))
+    );
+
+    const publishedExamIds = new Set<string>();
+    for (const att of ownAttempts) {
+      if (att?.status === 'published' || att?.resultReleased) {
+        publishedExamIds.add(String(att.examId));
+      }
+    }
+
+    const allQuestions = Array.isArray(st.questions) ? st.questions : [];
+    const visibleQuestions = allQuestions
+      .filter((q: any) => visibleExamIds.has(String(q?.examId || '')))
+      .map((q: any) => {
+        const isPublished = publishedExamIds.has(String(q?.examId || ''));
+        if (isPublished) {
+          return {
+            ...q,
+            testCases: Array.isArray(q.testCases)
+              ? q.testCases.filter((tc: any) => !tc?.isHidden)
+              : q.testCases,
+          };
+        }
+        const {
+          correctOptionId: _co,
+          explanation: _exp,
+          sampleRubric: _sr,
+          ...safeQ
+        } = q;
+        return {
+          ...safeQ,
+          testCases: Array.isArray(q.testCases)
+            ? q.testCases.filter((tc: any) => !tc?.isHidden)
+            : q.testCases,
+        };
+      });
+
+    const ownViolations = Array.isArray(st.violations)
+      ? st.violations.filter((v: any) => String(v?.studentId || '') === studentId)
+      : [];
+    const ownCertificates = Array.isArray(st.certificates)
+      ? st.certificates.filter(
+          (c: any) =>
+            String(c?.studentId || '') === studentId &&
+            c?.publishedToStudent !== false
+        )
+      : [];
+
+    const rawSettings = st.settings || {};
+    const safeSettings = {
+      ...rawSettings,
+      adminEmail: '',
+      adminName: 'Administrator',
+    };
+    delete safeSettings.adminPassword;
+
+    return {
+      updatedAt: payload.updatedAt,
+      state: {
+        subjects: Array.isArray(st.subjects) ? st.subjects : [],
+        students: [stripStudentSecrets(student)],
+        exams: visibleExams,
+        questions: visibleQuestions,
+        attempts: ownAttempts,
+        violations: ownViolations,
+        certificates: ownCertificates,
+        certificateTemplate: st.certificateTemplate,
+        activities: [],
+        settings: safeSettings,
+        publicSummary: getPublicSummary(st),
+        deletedIds: Array.isArray(st.deletedIds) ? st.deletedIds : [],
+        deletedTimestamps: st.deletedTimestamps || {},
+        settingsUpdatedAt: st.settingsUpdatedAt || 0,
+        templateUpdatedAt: st.templateUpdatedAt || 0,
+        adminUpdatedAt: st.adminUpdatedAt || 0,
+      },
+    };
+  };
+
+  /**
+   * Authoritatively grades student MCQ & descriptive provisional scores on the server
+   * using canonical server questions (never trusting client-submitted MCQ scores).
+   */
+  const gradeStudentAttemptAuthoritatively = (
+    incomingAttempt: any,
+    existingAttempt: any | undefined,
+    canonicalState: Record<string, any>
+  ) => {
+    if (
+      existingAttempt &&
+      (existingAttempt.status === 'evaluated' ||
+        existingAttempt.status === 'published')
+    ) {
+      return existingAttempt;
+    }
+
+    const isSubmitting =
+      incomingAttempt?.status === 'submitted' ||
+      incomingAttempt?.status === 'published';
+    if (!isSubmitting) {
+      // Keep in-progress answers while never allowing client to pre-populate scores
+      return {
+        ...incomingAttempt,
+        status: 'in-progress',
+        mcqScore: 0,
+        descriptiveScore: 0,
+        codingScore: 0,
+        totalScore: 0,
+        percentage: 0,
+        passed: false,
+      };
+    }
+
+    const exam = Array.isArray(canonicalState.exams)
+      ? canonicalState.exams.find((e: any) => e?.id === incomingAttempt.examId)
+      : undefined;
+    const examQuestions = Array.isArray(canonicalState.questions)
+      ? canonicalState.questions.filter(
+          (q: any) => q?.examId === incomingAttempt.examId
+        )
+      : [];
+
+    let mcqScore = 0;
+    let descriptiveScore = 0;
+    let codingScore = 0;
+    let hasDescriptive = false;
+
+    const updatedAnswers: Record<string, any> = {
+      ...(incomingAttempt.answers || {}),
+    };
+
+    for (const q of examQuestions) {
+      const ans = updatedAnswers[q.id];
+      if (!ans) continue;
+      const qMarks = Math.max(0, Number(q.marks) || 0);
+
+      if (q.type === 'mcq') {
+        const isCorrect =
+          Boolean(ans.selectedOptionId) &&
+          String(ans.selectedOptionId) === String(q.correctOptionId || '');
+        const pts = isCorrect ? qMarks : 0;
+        mcqScore += pts;
+        updatedAnswers[q.id] = { ...ans, awardedMarks: pts };
+      } else if (q.type === 'programming') {
+        const claimed = Number(ans.awardedMarks || 0);
+        const clamped = Number.isFinite(claimed)
+          ? Math.max(0, Math.min(qMarks, Math.round(claimed)))
+          : 0;
+        codingScore += clamped;
+        updatedAnswers[q.id] = { ...ans, awardedMarks: clamped };
+      } else if (q.type === 'descriptive') {
+        hasDescriptive = true;
+        const text = sanitizeText(String(ans.descriptiveText || ''), 12000);
+        const wordCount = text.split(/\s+/).filter(Boolean).length;
+        const provisional = wordCount >= 15 ? Math.round(qMarks * 0.8) : 0;
+        descriptiveScore += provisional;
+        updatedAnswers[q.id] = {
+          ...ans,
+          descriptiveText: text,
+          awardedMarks: provisional,
+        };
+      }
+    }
+
+    const totalScore = mcqScore + descriptiveScore + codingScore;
+    const maxScore =
+      examQuestions.reduce(
+        (acc: number, q: any) => acc + Math.max(0, Number(q.marks) || 0),
+        0
+      ) ||
+      Number(incomingAttempt.maxScore) ||
+      60;
+    const percentage = maxScore > 0 ? Math.round((totalScore / maxScore) * 100) : 0;
+    const passingMarks = exam?.passingMarks ?? Math.ceil(maxScore * 0.5);
+    const passed = totalScore >= passingMarks;
+    const nextStatus =
+      !hasDescriptive || exam?.status === 'Results Published'
+        ? 'published'
+        : 'submitted';
+
+    return {
+      ...incomingAttempt,
+      status: nextStatus,
+      submittedAt: incomingAttempt.submittedAt || new Date().toISOString(),
+      publishedAt:
+        nextStatus === 'published'
+          ? incomingAttempt.publishedAt || new Date().toISOString()
+          : undefined,
+      answers: updatedAnswers,
+      mcqScore,
+      descriptiveScore,
+      codingScore,
+      totalScore,
+      maxScore,
+      percentage,
+      passed,
+      updatedAtMs: Math.max(Date.now(), Number(incomingAttempt.updatedAtMs || 0) + 1),
+    };
+  };
+
+  // PDF Question Paper Text Extraction API using Mozilla pdfjs-dist (Admin-only + rate-limited)
   app.post('/api/parse-pdf', async (req, res) => {
     try {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      const adminSession = resolveAdminSession(req, true);
+      if (!adminSession) {
+        res.status(401).json({
+          ok: false,
+          error: 'Administrator authentication is required to parse question papers.',
+        });
+        return;
+      }
+
+      const limit = pdfParseLimiter.check(getClientIpKey(req));
+      if (!limit.allowed) {
+        res.setHeader('Retry-After', String(limit.retryAfterSec));
+        res.status(429).json({
+          ok: false,
+          error: 'Too many PDF parsing requests. Please wait a moment and try again.',
+        });
+        return;
+      }
+
       const base64Pdf = req.body?.base64Pdf;
       if (!base64Pdf || typeof base64Pdf !== 'string') {
         res.status(400).json({ ok: false, error: 'Missing base64Pdf payload' });
@@ -807,6 +1542,13 @@ async function startServer() {
 
       const cleanBase64 = base64Pdf.replace(/^data:application\/pdf;base64,/, '');
       const buffer = Buffer.from(cleanBase64, 'base64');
+      if (buffer.length === 0 || buffer.length > 20 * 1024 * 1024) {
+        res.status(413).json({
+          ok: false,
+          error: 'PDF file exceeds the 20 MB upload limit.',
+        });
+        return;
+      }
       const uint8 = new Uint8Array(buffer);
 
       const pdfjs: any = await import('pdfjs-dist/legacy/build/pdf.mjs');
@@ -816,17 +1558,17 @@ async function startServer() {
         disableFontFace: true,
         isEvalSupported: false,
       });
-      const doc = await loadingTask.promise;
+      const pdfDoc = await loadingTask.promise;
 
       const pageTexts: string[] = [];
-      for (let pageNum = 1; pageNum <= doc.numPages; pageNum++) {
-        const page = await doc.getPage(pageNum);
+      for (let pageNum = 1; pageNum <= pdfDoc.numPages; pageNum++) {
+        const page = await pdfDoc.getPage(pageNum);
         const textContent = await page.getTextContent();
         const items: any[] = Array.isArray(textContent?.items)
           ? textContent.items
           : [];
 
-        // Group text items by Y coordinate (within 3pt tolerance) and sort X left-to-right
+        // Group text items by Y coordinate (within 3.5pt tolerance) and sort X left-to-right
         interface LineBucket {
           y: number;
           parts: Array<{ x: number; str: string }>;
@@ -874,160 +1616,17 @@ async function startServer() {
       const fullText = pageTexts.join('\n\n').trim();
       res.json({
         ok: true,
-        pageCount: doc.numPages,
+        pageCount: pdfDoc.numPages,
         text: fullText,
       });
-    } catch (err: any) {
+    } catch {
       res.status(200).json({
         ok: false,
         text: '',
-        error: err?.message || 'PDF parsing failed',
+        error: 'Could not extract readable text from this PDF file.',
       });
     }
   });
-
-  // =========================================================
-  // SECURE SERVER-SIDE ADMIN AUTH & ZERO-LEAK EMAIL OTP ROUTES
-  // =========================================================
-  const getSettingsAdminEmail = (): string | undefined =>
-    typeof memoryStore.state?.settings?.adminEmail === 'string'
-      ? memoryStore.state.settings.adminEmail
-      : undefined;
-
-  const getSettingsAdminName = (): string | undefined =>
-    typeof memoryStore.state?.settings?.adminName === 'string'
-      ? memoryStore.state.settings.adminName
-      : undefined;
-
-  const ensureHydratedIfEmpty = async () => {
-    if (!hasMeaningfulState(memoryStore.state)) {
-      await hydrateServerStateFromFirestore();
-    }
-  };
-
-  const getClientIpKey = (req: express.Request): string =>
-    String(
-      req.headers['x-forwarded-for'] ||
-        req.socket?.remoteAddress ||
-        'unknown-client'
-    )
-      .split(',')[0]
-      .trim();
-
-  const ADMIN_SESSION_COOKIE = 'examflow_admin_session';
-  const ADMIN_COOKIE_MAX_AGE_SECONDS = 365 * 24 * 60 * 60; // 1 year (persists until explicit Logout)
-
-  const parseCookieValue = (
-    cookieHeader: string | undefined,
-    name: string
-  ): string | undefined => {
-    if (!cookieHeader || typeof cookieHeader !== 'string') return undefined;
-    const parts = cookieHeader.split(';');
-    for (const part of parts) {
-      const eqIdx = part.indexOf('=');
-      if (eqIdx === -1) continue;
-      const key = part.slice(0, eqIdx).trim();
-      if (key === name) {
-        try {
-          return decodeURIComponent(part.slice(eqIdx + 1).trim());
-        } catch {
-          return part.slice(eqIdx + 1).trim();
-        }
-      }
-    }
-    return undefined;
-  };
-
-  const isHttpsRequest = (req: express.Request): boolean => {
-    if (req.secure) return true;
-    const xfProto = String(req.headers['x-forwarded-proto'] || '')
-      .split(',')[0]
-      .trim()
-      .toLowerCase();
-    if (xfProto === 'https') return true;
-    const origin = String(req.headers.origin || '').trim().toLowerCase();
-    if (origin.startsWith('https://')) return true;
-    const referer = String(req.headers.referer || '').trim().toLowerCase();
-    if (referer.startsWith('https://')) return true;
-    return false;
-  };
-
-  const setAdminSessionCookie = (
-    req: express.Request,
-    res: express.Response,
-    token: string
-  ) => {
-    const attrs = [
-      `${ADMIN_SESSION_COOKIE}=${encodeURIComponent(token)}`,
-      'HttpOnly',
-      'Path=/',
-      `Max-Age=${ADMIN_COOKIE_MAX_AGE_SECONDS}`,
-    ];
-    if (isHttpsRequest(req)) {
-      attrs.push('Secure', 'SameSite=None', 'Partitioned');
-    } else {
-      attrs.push('SameSite=Lax');
-    }
-    res.setHeader('Set-Cookie', attrs.join('; '));
-  };
-
-  const clearAdminSessionCookie = (
-    req: express.Request,
-    res: express.Response
-  ) => {
-    const attrs = [
-      `${ADMIN_SESSION_COOKIE}=`,
-      'HttpOnly',
-      'Path=/',
-      'Max-Age=0',
-    ];
-    if (isHttpsRequest(req)) {
-      attrs.push('Secure', 'SameSite=None', 'Partitioned');
-    } else {
-      attrs.push('SameSite=Lax');
-    }
-    res.setHeader('Set-Cookie', attrs.join('; '));
-  };
-
-  const verifyCookieCsrf = (req: express.Request): boolean => {
-    // Allow requests carrying our explicit non-simple custom header
-    const xrw = String(req.headers['x-requested-with'] || '').trim();
-    if (xrw === 'ExamFlow-Client') return true;
-
-    // Otherwise verify Origin strictly matches X-Forwarded-Host or Host
-    const originHeader = String(req.headers.origin || '').trim();
-    const expectedHost = String(
-      req.headers['x-forwarded-host'] || req.headers.host || ''
-    )
-      .split(',')[0]
-      .trim()
-      .toLowerCase();
-    if (!originHeader || !expectedHost) return false;
-    try {
-      const originHost = new URL(originHeader).host.toLowerCase();
-      return originHost === expectedHost;
-    } catch {
-      return false;
-    }
-  };
-
-  const resolveAdminSession = (
-    req: express.Request,
-    requireCsrfForCookie = false
-  ) => {
-    const bearerSession = adminAuth.verifyBearerHeader(req.headers.authorization);
-    if (bearerSession) return bearerSession;
-
-    const cookieToken = parseCookieValue(
-      req.headers.cookie,
-      ADMIN_SESSION_COOKIE
-    );
-    if (!cookieToken) return null;
-    if (requireCsrfForCookie && !verifyCookieCsrf(req)) {
-      return null;
-    }
-    return adminAuth.verifyToken(cookieToken);
-  };
 
   app.get('/api/auth/admin/status', async (_req, res) => {
     try {
@@ -1041,6 +1640,15 @@ async function startServer() {
 
   app.post('/api/auth/admin/setup', async (req, res) => {
     try {
+      const limit = adminLoginLimiter.check(`setup:${getClientIpKey(req)}`);
+      if (!limit.allowed) {
+        res.setHeader('Retry-After', String(limit.retryAfterSec));
+        res.status(429).json({
+          ok: false,
+          error: 'Too many setup attempts. Please wait a few minutes and try again.',
+        });
+        return;
+      }
       await ensureHydratedIfEmpty();
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
       const email = String(req.body?.email || '').trim();
@@ -1066,6 +1674,7 @@ async function startServer() {
       }
 
       if (result.token) {
+        clearStudentSessionCookie(req, res);
         setAdminSessionCookie(req, res, result.token);
       }
 
@@ -1086,6 +1695,15 @@ async function startServer() {
 
   app.post('/api/auth/admin/login', async (req, res) => {
     try {
+      const limit = adminLoginLimiter.check(`admin:${getClientIpKey(req)}`);
+      if (!limit.allowed) {
+        res.setHeader('Retry-After', String(limit.retryAfterSec));
+        res.status(429).json({
+          ok: false,
+          error: 'Too many login attempts. Please wait a few minutes and try again.',
+        });
+        return;
+      }
       await ensureHydratedIfEmpty();
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
       const identifier = String(req.body?.identifier || '');
@@ -1103,6 +1721,7 @@ async function startServer() {
       }
 
       if (result.token) {
+        clearStudentSessionCookie(req, res);
         setAdminSessionCookie(req, res, result.token);
       }
 
@@ -1206,6 +1825,15 @@ async function startServer() {
 
   app.post('/api/auth/admin/otp/request', async (req, res) => {
     try {
+      const limit = otpLimiter.check(`otp-req:${getClientIpKey(req)}`);
+      if (!limit.allowed) {
+        res.setHeader('Retry-After', String(limit.retryAfterSec));
+        res.status(429).json({
+          ok: false,
+          error: 'Too many OTP requests. Please wait before trying again.',
+        });
+        return;
+      }
       await ensureHydratedIfEmpty();
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
       const email = String(req.body?.email || '').trim();
@@ -1231,6 +1859,15 @@ async function startServer() {
 
   app.post('/api/auth/admin/otp/google', async (req, res) => {
     try {
+      const limit = otpLimiter.check(`otp-google:${getClientIpKey(req)}`);
+      if (!limit.allowed) {
+        res.setHeader('Retry-After', String(limit.retryAfterSec));
+        res.status(429).json({
+          ok: false,
+          error: 'Too many verification requests. Please wait before trying again.',
+        });
+        return;
+      }
       await ensureHydratedIfEmpty();
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
       const email = String(req.body?.email || '').trim();
@@ -1261,6 +1898,15 @@ async function startServer() {
 
   app.post('/api/auth/admin/otp/verify', async (req, res) => {
     try {
+      const limit = otpLimiter.check(`otp-verify:${getClientIpKey(req)}`);
+      if (!limit.allowed) {
+        res.setHeader('Retry-After', String(limit.retryAfterSec));
+        res.status(429).json({
+          ok: false,
+          error: 'Too many OTP verification attempts. Please wait before trying again.',
+        });
+        return;
+      }
       await ensureHydratedIfEmpty();
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
       const otp = String(req.body?.otp || '').trim();
@@ -1280,6 +1926,167 @@ async function startServer() {
       res.json({ ok: true });
     } catch {
       res.status(500).json({ ok: false, error: 'Verification failed. Please try again.' });
+    }
+  });
+
+  // =========================================================
+  // SERVER-SIDE STUDENT AUTHENTICATION (SCRYPT + HTTPONLY COOKIE)
+  // =========================================================
+  app.post('/api/auth/student/login', async (req, res) => {
+    try {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      const limit = studentLoginLimiter.check(`student:${getClientIpKey(req)}`);
+      if (!limit.allowed) {
+        res.setHeader('Retry-After', String(limit.retryAfterSec));
+        res.status(429).json({
+          ok: false,
+          error: 'Too many student sign-in attempts. Please wait a few minutes and try again.',
+        });
+        return;
+      }
+
+      await ensureHydratedIfEmpty();
+      const cleanId = String(req.body?.identifier || '').trim().toLowerCase();
+      const compactId = cleanId.replace(/\s+/g, '');
+      const rawPass = String(req.body?.password || '').trim();
+
+      if (!cleanId) {
+        res.status(400).json({
+          ok: false,
+          error: 'Please enter your registered Student ID or Email.',
+        });
+        return;
+      }
+      if (!rawPass) {
+        res.status(400).json({
+          ok: false,
+          error: 'Please enter your Student password.',
+        });
+        return;
+      }
+
+      const students: any[] = Array.isArray(memoryStore.state?.students)
+        ? memoryStore.state.students
+        : [];
+      const student = students.find((s: any) => {
+        const sid = String(s?.studentId || '').trim().toLowerCase();
+        const sEmail = String(s?.email || '').trim().toLowerCase();
+        return (
+          sid === cleanId ||
+          sid.replace(/\s+/g, '') === compactId ||
+          sEmail === cleanId
+        );
+      });
+
+      if (!student) {
+        res.status(401).json({
+          ok: false,
+          error:
+            'Student account not found. Please check your Student ID or Email, or contact the Administrator.',
+        });
+        return;
+      }
+
+      if (student.status === 'Inactive') {
+        res.status(403).json({
+          ok: false,
+          error: `Student account ${student.studentId} is currently marked Inactive. Please ask the Administrator to set your status to Active in Student Management.`,
+        });
+        return;
+      }
+
+      const storedSecret = student.passwordHash || student.password;
+      const valid = verifyStudentPassword(
+        rawPass,
+        storedSecret,
+        String(student.studentId || '')
+      );
+      if (!valid) {
+        res.status(401).json({
+          ok: false,
+          error:
+            'Invalid Student password. Please enter your assigned password or contact the Administrator.',
+        });
+        return;
+      }
+
+      // Auto-upgrade any legacy plaintext password to salted scrypt on successful login
+      if (!isHashedStudentPassword(student.passwordHash)) {
+        student.passwordHash = hashStudentPassword(rawPass);
+        delete student.password;
+        saveServerState(
+          { updatedAt: Date.now(), state: memoryStore.state },
+          true
+        );
+      }
+
+      const token = adminAuth.issueStudentSessionToken({
+        id: String(student.id),
+        studentId: String(student.studentId),
+        email: String(student.email || ''),
+      });
+      clearAdminSessionCookie(req, res);
+      setStudentSessionCookie(req, res, token);
+
+      res.json({
+        ok: true,
+        user: buildStudentUserProfile(student),
+      });
+    } catch {
+      res.status(500).json({
+        ok: false,
+        error: 'Authentication server encountered an error. Please try again.',
+      });
+    }
+  });
+
+  app.get('/api/auth/student/session', async (req, res) => {
+    try {
+      await ensureHydratedIfEmpty();
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      const session = resolveStudentSession(req, false);
+      if (!session) {
+        res.status(200).json({ ok: true, authenticated: false });
+        return;
+      }
+      const student = findCanonicalStudent(
+        memoryStore.state?.students,
+        session.id,
+        session.studentId
+      );
+      if (!student || student.status === 'Inactive') {
+        clearStudentSessionCookie(req, res);
+        res.status(200).json({ ok: true, authenticated: false });
+        return;
+      }
+      res.status(200).json({
+        ok: true,
+        authenticated: true,
+        user: buildStudentUserProfile(student),
+      });
+    } catch {
+      res.status(500).json({ ok: false, authenticated: false });
+    }
+  });
+
+  app.post('/api/auth/student/logout', (req, res) => {
+    try {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      const cookieToken = parseCookieValue(
+        req.headers.cookie,
+        STUDENT_SESSION_COOKIE
+      );
+      if (cookieToken && !verifyCookieCsrf(req)) {
+        res.status(403).json({ ok: false, error: 'Cross-site logout request blocked.' });
+        return;
+      }
+      if (cookieToken) {
+        adminAuth.revokeStudentSessionToken(cookieToken);
+      }
+      clearStudentSessionCookie(req, res);
+      res.json({ ok: true });
+    } catch {
+      res.status(500).json({ ok: false, error: 'Logout failed.' });
     }
   });
 
@@ -1315,27 +2122,97 @@ async function startServer() {
     res.sendFile(targetPath);
   });
 
-  // Health & Diagnostics API
-  app.get('/api/health', (_req, res) => {
-    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-    const stateFileExists = fs.existsSync(STATE_FILE);
-    const stateFileBytes = stateFileExists ? fs.statSync(STATE_FILE).size : 0;
-    res.json({
-      ok: true,
-      stateFileExists,
-      stateFileBytes,
-      updatedAt: memoryStore.updatedAt,
-      smtpConfigured: adminAuth.isSmtpConfigured(),
-      needsInitialSetup: adminAuth.needsInitialSetup(),
-    });
+  // Serve official Panimalar crest for browsers requesting /favicon.ico directly
+  app.get('/favicon.ico', (_req, res) => {
+    const publicCrest = path.join(PUBLIC_ASSETS_DIR, 'panimalar-crest.png');
+    const distCrest = path.join(__dirname, 'dist', 'assets', 'panimalar-crest.png');
+    const targetPath = fs.existsSync(publicCrest)
+      ? publicCrest
+      : fs.existsSync(distCrest)
+      ? distCrest
+      : null;
+    if (!targetPath) {
+      res.status(204).end();
+      return;
+    }
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.sendFile(targetPath);
   });
 
-  // Live Shared State API for Cross-Device Student Login & Exam Sync
-  app.get('/api/state', async (_req, res) => {
+  // Minimal Health Check API (no internal server diagnostics or file metadata)
+  app.get('/api/health', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.json({ ok: true });
+  });
+
+  const applyServerTimedAutoPublish = () => {
+    const st = memoryStore.state;
+    if (!st || !Array.isArray(st.exams) || st.exams.length === 0) return;
+    const nowMs = Date.now();
+    let changed = false;
+    const publishedExamIds = new Set<string>();
+    const nextExams = st.exams.map((exam: any) => {
+      if (
+        exam?.autoPublishAt &&
+        exam?.status !== 'Results Published' &&
+        new Date(exam.autoPublishAt).getTime() <= nowMs
+      ) {
+        changed = true;
+        publishedExamIds.add(String(exam.id));
+        return { ...exam, status: 'Results Published', updatedAtMs: nowMs };
+      }
+      return exam;
+    });
+    if (!changed) return;
+    const nextAttempts = Array.isArray(st.attempts)
+      ? st.attempts.map((a: any) =>
+          publishedExamIds.has(String(a?.examId)) && a?.status !== 'in-progress'
+            ? {
+                ...a,
+                status: 'published',
+                publishedAt: a.publishedAt || new Date(nowMs).toISOString(),
+                updatedAtMs: Math.max(nowMs, Number(a.updatedAtMs || 0) + 1),
+              }
+            : a
+        )
+      : [];
+    saveServerState(
+      {
+        updatedAt: nowMs,
+        state: { ...st, exams: nextExams, attempts: nextAttempts },
+      },
+      true
+    );
+  };
+
+  // Role-Scoped Live Shared State API
+  app.get('/api/state', async (req, res) => {
     try {
       await ensureHydratedIfEmpty();
+      applyServerTimedAutoPublish();
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-      res.json(memoryStore);
+
+      const adminSession = resolveAdminSession(req, false);
+      if (adminSession) {
+        res.json(buildAdminStateView(memoryStore));
+        return;
+      }
+
+      const studentSession = resolveStudentSession(req, false);
+      if (studentSession) {
+        const student = findCanonicalStudent(
+          memoryStore.state?.students,
+          studentSession.id,
+          studentSession.studentId
+        );
+        if (student && student.status !== 'Inactive') {
+          res.json(buildStudentStateView(memoryStore, student));
+          return;
+        }
+      }
+
+      res.json(buildPublicStateView(memoryStore));
     } catch {
       res.status(500).json({ ok: false, error: 'Failed to load shared state.' });
     }
@@ -1343,6 +2220,17 @@ async function startServer() {
 
   app.post('/api/state/sync', async (req, res) => {
     try {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+      const limit = syncLimiter.check(`sync:${getClientIpKey(req)}`);
+      if (!limit.allowed) {
+        res.setHeader('Retry-After', String(limit.retryAfterSec));
+        res.status(429).json({
+          ok: false,
+          error: 'Too many sync requests. Please pause briefly and try again.',
+        });
+        return;
+      }
+
       await ensureHydratedIfEmpty();
       const incomingState = req.body?.state;
       const replaceAll = Boolean(req.body?.replaceAll);
@@ -1353,47 +2241,262 @@ async function startServer() {
           ? 'student'
           : 'anonymous';
 
-      // Strictly require a server-verified Admin session (Bearer or HttpOnly cookie + CSRF) for any Admin write or replaceAll
       if (requestedRole === 'admin' || replaceAll) {
-        const verifiedSession = resolveAdminSession(req, true);
-        if (!verifiedSession) {
+        const verifiedAdmin = resolveAdminSession(req, true);
+        if (!verifiedAdmin) {
           res.status(401).json({
+            ok: false,
             error:
               'Unauthorized Administrator mutation. Please sign in with valid Admin credentials.',
           });
           return;
         }
-      }
 
-      if (incomingState && typeof incomingState === 'object') {
-        const nextState =
-          replaceAll && requestedRole === 'admin'
-            ? incomingState
-            : mergeServerStates(memoryStore.state, incomingState, requestedRole);
+        if (incomingState && typeof incomingState === 'object') {
+          let nextState: Record<string, any>;
+          if (replaceAll) {
+            // Preserve existing student password hashes for students edited without a new password
+            const prevStudents: any[] = Array.isArray(memoryStore.state?.students)
+              ? memoryStore.state.students
+              : [];
+            const incomingStudents: any[] = Array.isArray(incomingState.students)
+              ? incomingState.students.map((stu: any) => {
+                  if (
+                    (typeof stu?.password === 'string' && stu.password.trim()) ||
+                    (typeof stu?.passwordHash === 'string' && stu.passwordHash.trim())
+                  ) {
+                    return stu;
+                  }
+                  const prevMatch = findCanonicalStudent(
+                    prevStudents,
+                    stu?.id,
+                    stu?.studentId
+                  );
+                  return prevMatch?.passwordHash
+                    ? { ...stu, passwordHash: prevMatch.passwordHash }
+                    : stu;
+                })
+              : [];
+            nextState = { ...incomingState, students: incomingStudents };
+          } else {
+            nextState = mergeServerStates(
+              memoryStore.state,
+              incomingState,
+              'admin'
+            );
+          }
 
-        // Keep server recovery email automatically synchronized when Admin updates Settings email
-        if (
-          requestedRole === 'admin' &&
-          typeof nextState?.settings?.adminEmail === 'string'
-        ) {
-          adminAuth.syncRecoveryEmail(nextState.settings.adminEmail);
+          if (typeof nextState?.settings?.adminEmail === 'string') {
+            adminAuth.syncRecoveryEmail(nextState.settings.adminEmail);
+          }
+
+          saveServerState({ updatedAt: Date.now(), state: nextState }, true);
         }
 
-        const nextPayload: SharedSyncPayload = {
-          updatedAt: Date.now(),
-          state: nextState,
-        };
-        saveServerState(nextPayload, true);
+        res.json(buildAdminStateView(memoryStore));
+        return;
       }
 
-      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-      res.json(memoryStore);
-    } catch (err: any) {
-      res.status(500).json({ error: err?.message || 'Sync error' });
+      if (requestedRole === 'student') {
+        const verifiedStudent = resolveStudentSession(req, true);
+        if (!verifiedStudent) {
+          res.status(401).json({
+            ok: false,
+            error: 'Unauthorized Student sync. Please sign in again.',
+          });
+          return;
+        }
+
+        const canonicalStudent = findCanonicalStudent(
+          memoryStore.state?.students,
+          verifiedStudent.id,
+          verifiedStudent.studentId
+        );
+        if (!canonicalStudent || canonicalStudent.status === 'Inactive') {
+          res.status(401).json({
+            ok: false,
+            error: 'Student account is no longer active. Please sign in again.',
+          });
+          return;
+        }
+
+        if (incomingState && typeof incomingState === 'object') {
+          const verifiedId = String(canonicalStudent.id);
+          const nextState: Record<string, any> = { ...memoryStore.state };
+
+          // 1. Allow student to update ONLY their own editable contact/bio profile fields
+          if (Array.isArray(incomingState.students)) {
+            const selfPatch = incomingState.students.find(
+              (s: any) => String(s?.id || '') === verifiedId
+            );
+            if (selfPatch && typeof selfPatch === 'object') {
+              const allowedFields = [
+                'phone',
+                'dateOfBirth',
+                'gender',
+                'cgpa',
+                'address',
+                'city',
+                'guardianName',
+                'guardianPhone',
+                'linkedinUrl',
+                'githubUrl',
+                'skills',
+                'bio',
+              ] as const;
+              const patchObj: Record<string, any> = {};
+              for (const field of allowedFields) {
+                if (selfPatch[field] !== undefined) {
+                  patchObj[field] = selfPatch[field];
+                }
+              }
+              if (Object.keys(patchObj).length > 0) {
+                nextState.students = (nextState.students || []).map((s: any) =>
+                  String(s?.id || '') === verifiedId
+                    ? {
+                        ...s,
+                        ...patchObj,
+                        updatedAtMs: Math.max(
+                          Date.now(),
+                          Number(selfPatch.updatedAtMs || 0)
+                        ),
+                      }
+                    : s
+                );
+              }
+            }
+          }
+
+          // 2. Allow student to create/update ONLY their own exam attempts with server-authoritative grading
+          const existingAttempts: any[] = Array.isArray(nextState.attempts)
+            ? nextState.attempts
+            : [];
+          const existingCertificates: any[] = Array.isArray(nextState.certificates)
+            ? [...nextState.certificates]
+            : [];
+          const incomingOwnAttempts: any[] = Array.isArray(incomingState.attempts)
+            ? incomingState.attempts
+                .filter((a: any) => String(a?.studentId || '') === verifiedId)
+                .map((att: any) => {
+                  const prev = existingAttempts.find(
+                    (e: any) => String(e?.id || '') === String(att?.id || '')
+                  );
+                  return gradeStudentAttemptAuthoritatively(
+                    {
+                      ...att,
+                      studentId: verifiedId,
+                      studentName: canonicalStudent.name,
+                      studentRegId: canonicalStudent.studentId,
+                      studentEmail: canonicalStudent.email,
+                    },
+                    prev,
+                    nextState
+                  );
+                })
+            : [];
+
+          if (incomingOwnAttempts.length > 0) {
+            const deletedSet = new Set<string>(
+              Array.isArray(nextState.deletedIds) ? nextState.deletedIds : []
+            );
+            nextState.attempts = mergeArrayById(
+              existingAttempts,
+              incomingOwnAttempts,
+              deletedSet,
+              false,
+              true
+            );
+
+            // Auto-issue merit certificate on the server for any passed graded attempt
+            for (const att of incomingOwnAttempts) {
+              if (
+                att.passed &&
+                (att.status === 'submitted' || att.status === 'published') &&
+                !existingCertificates.some((c: any) => c?.attemptId === att.id)
+              ) {
+                const grade =
+                  att.percentage >= 90
+                    ? 'A+ (Distinction)'
+                    : att.percentage >= 80
+                    ? 'A (First Class)'
+                    : att.percentage >= 70
+                    ? 'B+ (Merit)'
+                    : 'B (Pass)';
+                existingCertificates.push({
+                  id: `cert-auto-${att.id}`,
+                  certificateNumber: `EF-2026-${String(att.subjectName || 'EXM')
+                    .slice(0, 3)
+                    .toUpperCase()}-${String(existingCertificates.length + 1).padStart(3, '0')}`,
+                  attemptId: att.id,
+                  examId: att.examId,
+                  examTitle: att.examTitle,
+                  subjectName: att.subjectName,
+                  studentId: verifiedId,
+                  studentName: canonicalStudent.name,
+                  studentRegId: canonicalStudent.studentId,
+                  section: normalizeServerSection(canonicalStudent.section),
+                  score: att.totalScore,
+                  maxScore: att.maxScore,
+                  percentage: att.percentage,
+                  grade,
+                  issuedAt: (att.submittedAt || new Date().toISOString()).split('T')[0],
+                  publishedToStudent: true,
+                  customRemarks:
+                    'Awarded for passing the proctored examination with verified distinction.',
+                  updatedAtMs: Date.now(),
+                });
+              }
+            }
+            nextState.certificates = existingCertificates;
+          }
+
+          // 3. Allow student to log ONLY their own proctoring violations
+          if (Array.isArray(incomingState.violations)) {
+            const ownViolations = incomingState.violations
+              .filter((v: any) => String(v?.studentId || '') === verifiedId)
+              .map((v: any) => ({
+                ...v,
+                studentId: verifiedId,
+                studentName: canonicalStudent.name,
+                studentRegId: canonicalStudent.studentId,
+                details: sanitizeText(String(v?.details || ''), 500),
+              }));
+            if (ownViolations.length > 0) {
+              const deletedSet = new Set<string>(
+                Array.isArray(nextState.deletedIds) ? nextState.deletedIds : []
+              );
+              nextState.violations = mergeArrayById(
+                nextState.violations || [],
+                ownViolations,
+                deletedSet
+              );
+            }
+          }
+
+          saveServerState({ updatedAt: Date.now(), state: nextState }, true);
+        }
+
+        const refreshedStudent =
+          findCanonicalStudent(
+            memoryStore.state?.students,
+            verifiedStudent.id,
+            verifiedStudent.studentId
+          ) || canonicalStudent;
+        res.json(buildStudentStateView(memoryStore, refreshedStudent));
+        return;
+      }
+
+      res.status(401).json({
+        ok: false,
+        error: 'Authentication is required to synchronize platform state.',
+      });
+    } catch (err) {
+      console.error('[ExamFlow] Sync error:', err);
+      res.status(500).json({ ok: false, error: 'Failed to synchronize state.' });
     }
   });
 
-  // Always return JSON for API parsing/body errors instead of HTML error pages
+  // Always return safe JSON for API parsing/body errors instead of HTML error pages or stack traces
   app.use(
     '/api',
     (
@@ -1403,9 +2506,18 @@ async function startServer() {
       _next: express.NextFunction
     ) => {
       const status = Number(err?.status || err?.statusCode || 500);
-      res.status(status >= 400 && status < 600 ? status : 500).json({
+      const safeStatus = status >= 400 && status < 600 ? status : 500;
+      if (safeStatus >= 500) {
+        console.error('[ExamFlow] API error:', err);
+      }
+      res.status(safeStatus).json({
         ok: false,
-        error: err?.message || 'Unexpected API error.',
+        error:
+          safeStatus >= 500
+            ? 'An unexpected server error occurred. Please try again.'
+            : safeStatus === 413
+            ? 'Request payload is too large.'
+            : 'Invalid API request.',
       });
     }
   );

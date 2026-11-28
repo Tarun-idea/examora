@@ -1202,6 +1202,91 @@ export class ServerAdminAuthService {
   }
 
   /**
+   * Issue a 365-day HMAC-SHA256 signed student session token bound to the student's id and studentId.
+   * Survives page refreshes, browser restarts, and ephemeral Cloud Run cold starts until explicit logout.
+   */
+  public issueStudentSessionToken(student: {
+    id: string;
+    studentId: string;
+    email: string;
+  }): string {
+    const now = Date.now();
+    const sid = crypto.randomBytes(16).toString('hex');
+    const payload = {
+      role: 'student',
+      sid,
+      id: String(student.id || '').trim(),
+      studentId: String(student.studentId || '').trim(),
+      email: String(student.email || '').trim(),
+      iat: now,
+      exp: now + SESSION_TTL_MS,
+    };
+    const encoded = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url');
+    const sig = crypto
+      .createHmac('sha256', this.getSessionSigningKey())
+      .update(`student:${encoded}`)
+      .digest('base64url');
+    return `stu.${encoded}.${sig}`;
+  }
+
+  public verifyStudentSessionToken(rawToken: string): StudentSession | null {
+    if (!rawToken || typeof rawToken !== 'string') return null;
+    const parts = rawToken.trim().split('.');
+    if (parts.length !== 3 || parts[0] !== 'stu') return null;
+    const encoded = parts[1];
+    const providedSig = parts[2];
+    if (!encoded || !providedSig) return null;
+
+    const expectedSig = crypto
+      .createHmac('sha256', this.getSessionSigningKey())
+      .update(`student:${encoded}`)
+      .digest('base64url');
+    try {
+      const a = Buffer.from(providedSig, 'utf8');
+      const b = Buffer.from(expectedSig, 'utf8');
+      if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+        return null;
+      }
+    } catch {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
+      if (
+        !parsed ||
+        parsed.role !== 'student' ||
+        typeof parsed.sid !== 'string' ||
+        typeof parsed.id !== 'string' ||
+        typeof parsed.studentId !== 'string' ||
+        typeof parsed.exp !== 'number'
+      ) {
+        return null;
+      }
+      if (parsed.exp <= Date.now()) return null;
+      if (this.revokedSessionIds.has(`stu:${parsed.sid}`)) return null;
+      return {
+        token: rawToken.trim(),
+        sid: parsed.sid,
+        id: parsed.id,
+        studentId: parsed.studentId,
+        email: String(parsed.email || ''),
+        createdAt: Number(parsed.iat || Date.now()),
+        expiresAt: parsed.exp,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  public revokeStudentSessionToken(rawToken: string): void {
+    const verified = this.verifyStudentSessionToken(rawToken);
+    if (!verified) return;
+    this.revokedSessionIds.add(`stu:${verified.sid}`);
+    this.saveRevokedToDisk();
+  }
+
+  /**
    * Test-only helper for unit tests to exercise OTP verification without real SMTP network calls.
    */
   public _issueTestOtpForUnitTests(targetEmail: string): string {
@@ -1210,5 +1295,139 @@ export class ServerAdminAuthService {
       throw new Error(res.error || 'Failed to issue test OTP');
     }
     return res.rawOtp;
+  }
+}
+
+export interface StudentSession {
+  token: string;
+  sid: string;
+  id: string;
+  studentId: string;
+  email: string;
+  createdAt: number;
+  expiresAt: number;
+}
+
+const SCRYPT_STUDENT_PREFIX = 'scrypt$';
+const SCRYPT_STUDENT_REGEX = /^scrypt\$([a-f0-9]{32})\$([a-f0-9]{64})$/i;
+
+export function isHashedStudentPassword(value?: string): boolean {
+  return typeof value === 'string' && SCRYPT_STUDENT_REGEX.test(value.trim());
+}
+
+export function hashStudentPassword(plainOrHash: string): string {
+  const clean = String(plainOrHash || '').trim();
+  if (!clean) return '';
+  if (isHashedStudentPassword(clean)) {
+    return clean;
+  }
+  const salt = crypto.randomBytes(16).toString('hex');
+  const derived = crypto.scryptSync(clean, salt, 32).toString('hex');
+  return `${SCRYPT_STUDENT_PREFIX}${salt}$${derived}`;
+}
+
+export function verifyStudentPassword(
+  candidate: string,
+  storedHashOrPlain: string | undefined,
+  studentId: string
+): boolean {
+  const cleanCandidate = String(candidate || '').trim();
+  if (!cleanCandidate) return false;
+
+  const stored = String(storedHashOrPlain || '').trim();
+  if (stored && isHashedStudentPassword(stored)) {
+    const match = stored.match(SCRYPT_STUDENT_REGEX);
+    if (!match) return false;
+    const [, salt, expectedHex] = match;
+    const candidateHex = crypto.scryptSync(cleanCandidate, salt, 32).toString('hex');
+    return timingSafeHexEquals(candidateHex, expectedHex);
+  }
+
+  // Legacy plaintext (before migration) or brand-new student defaulting to studentId
+  const expectedPlain = stored || String(studentId || '').trim();
+  if (!expectedPlain) return false;
+  try {
+    const bufA = Buffer.from(cleanCandidate, 'utf8');
+    const bufB = Buffer.from(expectedPlain, 'utf8');
+    if (bufA.length === bufB.length && crypto.timingSafeEqual(bufA, bufB)) {
+      return true;
+    }
+    // Allow case-insensitive match ONLY when student has no custom password and uses their Student ID
+    if (!stored && cleanCandidate.toLowerCase() === expectedPlain.toLowerCase()) {
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+export function sanitizeText(value: unknown, maxLen = 500): string {
+  if (typeof value !== 'string') return '';
+  // Strip NUL bytes and non-printable ASCII control chars (keep tabs/newlines)
+  const cleaned = value.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '').trim();
+  return cleaned.length > maxLen ? cleaned.slice(0, maxLen) : cleaned;
+}
+
+export function sanitizeSafeUrl(value: unknown, allowRelative = false): string {
+  if (typeof value !== 'string') return '';
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  if (trimmed.length > 2048) return '';
+  if (allowRelative && trimmed.startsWith('/') && !trimmed.startsWith('//')) {
+    return trimmed;
+  }
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol === 'https:' || parsed.protocol === 'http:') {
+      return trimmed;
+    }
+  } catch {
+    // Allow bare domain strings like "panimalar.ac.in" by normalizing to https://
+    if (
+      !trimmed.includes(':') &&
+      /^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(\/[^\s]*)?$/.test(trimmed)
+    ) {
+      return `https://${trimmed}`;
+    }
+  }
+  return '';
+}
+
+interface RateLimitBucket {
+  count: number;
+  resetAt: number;
+}
+
+export class SlidingWindowRateLimiter {
+  private buckets = new Map<string, RateLimitBucket>();
+  private maxRequests: number;
+  private windowMs: number;
+
+  constructor(maxRequests: number, windowMs: number) {
+    this.maxRequests = maxRequests;
+    this.windowMs = windowMs;
+  }
+
+  public check(key: string): { allowed: boolean; retryAfterSec: number } {
+    const now = Date.now();
+    if (this.buckets.size > 5000) {
+      for (const [k, b] of this.buckets.entries()) {
+        if (b.resetAt <= now) this.buckets.delete(k);
+      }
+    }
+    const existing = this.buckets.get(key);
+    if (!existing || existing.resetAt <= now) {
+      this.buckets.set(key, { count: 1, resetAt: now + this.windowMs });
+      return { allowed: true, retryAfterSec: 0 };
+    }
+    if (existing.count >= this.maxRequests) {
+      return {
+        allowed: false,
+        retryAfterSec: Math.max(1, Math.ceil((existing.resetAt - now) / 1000)),
+      };
+    }
+    existing.count += 1;
+    return { allowed: true, retryAfterSec: 0 };
   }
 }

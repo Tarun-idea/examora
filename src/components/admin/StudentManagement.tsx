@@ -50,7 +50,7 @@ export const StudentManagement: React.FC = () => {
     setStudentId('');
     setName('');
     setEmail('');
-    setStudentPassword('123');
+    setStudentPassword('');
     setDepartment('Computer Science & Engineering');
     setYear('Year 3');
     setSection('A');
@@ -63,7 +63,7 @@ export const StudentManagement: React.FC = () => {
     setStudentId(stu.studentId);
     setName(stu.name);
     setEmail(stu.email);
-    setStudentPassword(stu.password || '123');
+    setStudentPassword('');
     setDepartment(stu.department || 'Computer Science & Engineering');
     setYear(stu.year || 'Year 3');
     setSection(normalizeSection(stu.section || 'A'));
@@ -76,6 +76,7 @@ export const StudentManagement: React.FC = () => {
     if (!studentId.trim()) return;
     const cleanId = studentId.trim().toUpperCase();
     const resolvedName = name.trim() || `Student ${cleanId}`;
+    const trimmedPass = studentPassword.trim();
 
     if (editingStudentId) {
       const updated = examStore.updateStudent(editingStudentId, {
@@ -87,15 +88,18 @@ export const StudentManagement: React.FC = () => {
         department: department.trim() || 'Computer Science & Engineering',
         year,
         section: normalizeSection(section),
-        password: studentPassword.trim() || '123',
+        ...(trimmedPass ? { password: trimmedPass } : {}),
         status,
       });
       if (updated) {
         setBannerMsg(
-          `Updated & synced student ${updated.name} (Student ID: ${updated.studentId}, Password: ${updated.password || '123'}, Section ${updated.section}) across all devices.`
+          `Updated & synced student ${updated.name} (Student ID: ${updated.studentId}, Section ${updated.section})${
+            trimmedPass ? ' with a new hashed password' : ''
+          } across all devices.`
         );
       }
     } else {
+      const assignedPass = trimmedPass || cleanId;
       const stu = examStore.addStudent({
         studentId: cleanId,
         name: resolvedName,
@@ -103,10 +107,10 @@ export const StudentManagement: React.FC = () => {
         department,
         year,
         section: normalizeSection(section),
-        password: studentPassword.trim() || '123',
+        password: assignedPass,
       });
       setBannerMsg(
-        `Registered & synced ${stu.name} (Student ID: ${stu.studentId}, Password: ${stu.password || '123'}) in Section ${stu.section}. The student can now login on any device.`
+        `Registered & synced ${stu.name} (Student ID: ${stu.studentId}, Section ${stu.section}). Password is encrypted on the server and ready for cross-device login.`
       );
     }
 
@@ -115,7 +119,7 @@ export const StudentManagement: React.FC = () => {
     setStudentId('');
     setName('');
     setEmail('');
-    setStudentPassword('123');
+    setStudentPassword('');
   };
 
   const parseCsvRow = (line: string): string[] => {
@@ -546,13 +550,19 @@ export const StudentManagement: React.FC = () => {
               </div>
               <div>
                 <label className="block text-xs font-bold text-slate-200 mb-1">
-                  Student Login Password (Defaults to 123 — Student ID also works)
+                  {editingStudentId
+                    ? 'Reset Student Password (Leave blank to keep current password)'
+                    : 'Student Login Password (Defaults to Student ID if left blank)'}
                 </label>
                 <input
                   type="text"
                   value={studentPassword}
                   onChange={(e) => setStudentPassword(e.target.value)}
-                  placeholder="Default: 123 (or Student ID)"
+                  placeholder={
+                    editingStudentId
+                      ? 'Leave blank to keep existing password'
+                      : 'Enter initial password (or leave blank for Student ID)'
+                  }
                   className="w-full px-3.5 py-2.5 rounded-xl border border-purple-500/35 bg-[#141946] text-xs font-mono text-white"
                 />
               </div>

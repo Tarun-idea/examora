@@ -29,9 +29,13 @@ export const WelcomeLandingPage: React.FC<WelcomeLandingPageProps> = ({
   const state = examStore.getState();
   const collegeLogoUrl = state.settings.collegeLogoUrl || '';
 
-  const liveExamsCount = state.exams.filter(
-    (e) => String(e.status || '').trim().toLowerCase() !== 'draft'
-  ).length;
+  const enrolledStudentsCount =
+    state.publicSummary?.enrolledStudentsCount ?? state.students.length;
+  const liveExamsCount =
+    state.publicSummary?.liveExamsCount ??
+    state.exams.filter(
+      (e) => String(e.status || '').trim().toLowerCase() !== 'draft'
+    ).length;
 
   const scrollToSection = (sectionId: string) => {
     const el = document.getElementById(sectionId);
@@ -182,7 +186,7 @@ export const WelcomeLandingPage: React.FC<WelcomeLandingPageProps> = ({
                   </div>
                   <div>
                     <div className="text-lg font-extrabold text-white font-mono tabular-nums leading-none">
-                      {state.students.length}
+                      {enrolledStudentsCount}
                     </div>
                     <div className="text-[11px] text-slate-400 mt-1">
                       Enrolled Students

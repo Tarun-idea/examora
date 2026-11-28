@@ -977,21 +977,17 @@ export const EvaluationStation: React.FC<EvaluationStationProps> = () => {
               </div>
             </div>
 
-            <div className="flex items-center justify-between p-4 rounded-2xl bg-blue-50/70 border border-blue-100 text-xs text-blue-950">
+            <div className="flex flex-wrap items-center justify-between gap-3 p-4 rounded-2xl bg-blue-50/70 border border-blue-100 text-xs text-blue-950">
               <span>
-                This candidate has not submitted an attempt for{' '}
-                <strong>{selectedItem.examTitle}</strong> yet. You can switch to
-                their student portal to take the exam.
+                This candidate (
+                <strong className="font-mono">{selectedItem.studentRegId}</strong>
+                ) has not submitted an attempt for{' '}
+                <strong>{selectedItem.examTitle}</strong> yet. Their submission
+                will appear here automatically once they complete the exam.
               </span>
-              <button
-                type="button"
-                onClick={() =>
-                  examStore.switchRoleQuick('student', selectedItem.studentId)
-                }
-                className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold whitespace-nowrap cursor-pointer ml-3"
-              >
-                Open Student Portal →
-              </button>
+              <span className="px-3 py-1.5 rounded-xl bg-blue-100 text-blue-800 font-bold whitespace-nowrap">
+                Awaiting Candidate Submission
+              </span>
             </div>
           </div>
         ) : (
