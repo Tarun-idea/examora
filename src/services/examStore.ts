@@ -755,7 +755,18 @@ export function mergeSharedPlatformState(
           ...(current.settings || {}),
         };
   // Never store or expose plaintext admin passwords in shared state
-  const { adminPassword: _strippedPassword, ...settings } = rawSettings;
+  const { adminPassword: _strippedPassword, ...mergedSettings } = rawSettings;
+  const rawLogo = String(mergedSettings.collegeLogoUrl || '').trim();
+  const normalizedLogo =
+    !rawLogo ||
+    rawLogo.includes('college-logo-bd9fb83a48b7') ||
+    rawLogo.startsWith('/assets/aistudio/')
+      ? '/assets/panimalar-crest.png'
+      : rawLogo;
+  const settings: PlatformSettings = {
+    ...mergedSettings,
+    collegeLogoUrl: normalizedLogo,
+  };
 
   const currentTemplateTime = Number(current.templateUpdatedAt || 0);
   const incomingTemplateTime = Number(incoming.templateUpdatedAt || 0);
@@ -1620,7 +1631,12 @@ class ExamStore {
       const data = await res.json().catch(() => ({}));
       if (!data?.ok || !data?.authenticated) {
         this.adminCookieAuthenticated = false;
+        this.adminSessionToken = null;
         this.adminSessionHintOnBoot = false;
+        if (this.state.currentUser.role === 'admin') {
+          this.state.isAuthenticated = false;
+          this.saveToStorage();
+        }
         return false;
       }
 

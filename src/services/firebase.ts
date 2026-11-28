@@ -3,7 +3,7 @@
  */
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
-import { getFirestore, doc, getDoc, getDocFromServer, setDoc, onSnapshot, setLogLevel } from 'firebase/firestore';
+import { getFirestore, initializeFirestore, doc, getDoc, getDocFromServer, setDoc, onSnapshot, setLogLevel } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 // Silence verbose connection warnings during token service propagation/offline mode
@@ -225,11 +225,24 @@ export async function sendAdminOtpGmail(
   });
 }
 
-// Initialize Firestore with Database ID from config
+// Initialize Firestore with Database ID from config (auto-detect long polling for iframe/proxy resilience)
 const firestoreDatabaseId =
   (firebaseConfig as { firestoreDatabaseId?: string }).firestoreDatabaseId ||
   'ai-studio-2008-02d43818-3203-4254-81eb-0898309acdc4';
-export const db = getFirestore(app, firestoreDatabaseId);
+
+function createFirestoreClient() {
+  try {
+    return initializeFirestore(
+      app,
+      { experimentalAutoDetectLongPolling: true },
+      firestoreDatabaseId
+    );
+  } catch {
+    return getFirestore(app, firestoreDatabaseId);
+  }
+}
+
+export const db = createFirestoreClient();
 
 // Error logging conforming to Firebase skill
 export enum OperationType {
@@ -241,6 +254,21 @@ export enum OperationType {
   WRITE = 'write',
 }
 
+function isTransientFirestoreNetworkError(error: unknown): boolean {
+  const msg = (error instanceof Error ? error.message : String(error || '')).toLowerCase();
+  const code = String((error as { code?: string })?.code || '').toLowerCase();
+  return (
+    code === 'unavailable' ||
+    code === 'cancelled' ||
+    msg.includes('client is offline') ||
+    msg.includes('timed out') ||
+    msg.includes('token-service-api') ||
+    msg.includes('network-request-failed') ||
+    msg.includes('failed to fetch') ||
+    msg.includes('could not reach cloud firestore backend')
+  );
+}
+
 export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
   const errInfo = {
     error: error instanceof Error ? error.message : String(error),
@@ -249,15 +277,24 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
       email: auth.currentUser?.email,
       emailVerified: auth.currentUser?.emailVerified,
       isAnonymous: auth.currentUser?.isAnonymous,
+      tenantId: auth.currentUser?.tenantId,
+      providerInfo:
+        auth.currentUser?.providerData?.map((provider) => ({
+          providerId: provider.providerId,
+          email: provider.email,
+        })) || [],
     },
     operationType,
     path,
   };
-  console.warn('Firestore Operation Info:', JSON.stringify(errInfo));
+  // Express /api/state handles live synchronization whenever direct browser-to-Firestore is transiently offline
+  if (!isTransientFirestoreNetworkError(error)) {
+    console.warn('Firestore Operation Info:', JSON.stringify(errInfo));
+  }
   return errInfo;
 }
 
-function withTimeout<T>(promise: Promise<T>, timeoutMs = 4000): Promise<T> {
+function withTimeout<T>(promise: Promise<T>, timeoutMs = 8000): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
       reject(new Error('Firestore request timed out'));
@@ -276,28 +313,29 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs = 4000): Promise<T> {
 
 // Test connection on boot per Firebase skill guidelines (non-blocking, bounded timeout)
 export async function testFirestoreConnection() {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
   try {
-    await withTimeout(getDocFromServer(doc(db, 'examflow_sync', 'live_state')), 4000);
+    await withTimeout(getDocFromServer(doc(db, 'examflow_sync', 'live_state')), 8000);
   } catch (error: any) {
-    if (
-      error instanceof Error &&
-      (error.message.includes('the client is offline') ||
-        error.message.includes('token-service-api') ||
-        error.message.includes('timed out'))
-    ) {
+    if (isTransientFirestoreNetworkError(error)) {
       // Gracefully operate with Express API + local storage fallback
+      return;
     }
   }
 }
 
 export async function fetchFirestoreSyncState(): Promise<{ updatedAt: number; state: Record<string, any> } | null> {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return null;
   try {
     const docRef = doc(db, 'examflow_sync', 'live_state');
     let snap;
     try {
-      snap = await withTimeout(getDocFromServer(docRef), 4000);
-    } catch {
-      snap = await withTimeout(getDoc(docRef), 2500);
+      snap = await withTimeout(getDocFromServer(docRef), 8000);
+    } catch (serverErr) {
+      if (isTransientFirestoreNetworkError(serverErr)) {
+        return null;
+      }
+      snap = await withTimeout(getDoc(docRef), 4000);
     }
     if (!snap || !snap.exists()) return null;
     const data = snap.data();
@@ -315,6 +353,7 @@ export async function fetchFirestoreSyncState(): Promise<{ updatedAt: number; st
 }
 
 export async function pushFirestoreSyncState(stateObj: Record<string, any>): Promise<boolean> {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return false;
   try {
     const payloadJson = JSON.stringify(stateObj);
     if (payloadJson.length > 940000) {

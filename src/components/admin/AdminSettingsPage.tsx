@@ -83,9 +83,9 @@ export const AdminSettingsPage: React.FC = () => {
   };
 
   const handleClearLogo = () => {
-    setCollegeLogoUrl('');
-    examStore.updateSettings({ collegeLogoUrl: '' });
-    setSavedBanner('Restored default ExamFlow Academic Crest.');
+    setCollegeLogoUrl('/assets/panimalar-crest.png');
+    examStore.updateSettings({ collegeLogoUrl: '/assets/panimalar-crest.png' });
+    setSavedBanner('Restored official Panimalar Engineering College Crest.');
   };
 
   const handleSaveSettings = (e: React.FormEvent) => {

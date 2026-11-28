@@ -324,8 +324,22 @@ function sanitizeServerStateCollections(stateObj: Record<string, any>): Record<s
       const { adminPassword: _removed, ...safeSettings } = stateObj.settings;
       stateObj.settings = safeSettings;
     }
-    if (typeof stateObj.settings.collegeLogoUrl === 'string') {
-      const extRes = externalizeInlineImageDataUrl(stateObj.settings.collegeLogoUrl);
+    const currentLogo = String(stateObj.settings.collegeLogoUrl || '').trim();
+    if (
+      !currentLogo ||
+      currentLogo.includes('college-logo-bd9fb83a48b7') ||
+      currentLogo.startsWith('/assets/aistudio/')
+    ) {
+      stateObj.settings = {
+        ...stateObj.settings,
+        collegeLogoUrl: '/assets/panimalar-crest.png',
+      };
+      stateObj.settingsUpdatedAt = Math.max(
+        Date.now(),
+        Number(stateObj.settingsUpdatedAt || 0) + 1
+      );
+    } else {
+      const extRes = externalizeInlineImageDataUrl(currentLogo);
       if (extRes.migrated) {
         stateObj.settings = {
           ...stateObj.settings,
@@ -355,16 +369,18 @@ function loadServerState(): SharedSyncPayload {
         const hadPlaintextPass = Boolean(
           parsed.state?.settings && 'adminPassword' in parsed.state.settings
         );
-        const hadOversizedInlineLogo =
-          typeof parsed.state?.settings?.collegeLogoUrl === 'string' &&
-          parsed.state.settings.collegeLogoUrl.startsWith('data:image/') &&
-          parsed.state.settings.collegeLogoUrl.length > 2048;
+        const rawLogoOnDisk = String(parsed.state?.settings?.collegeLogoUrl || '').trim();
+        const hadLegacyOrOversizedLogo =
+          !rawLogoOnDisk ||
+          rawLogoOnDisk.includes('college-logo-bd9fb83a48b7') ||
+          rawLogoOnDisk.startsWith('/assets/aistudio/') ||
+          (rawLogoOnDisk.startsWith('data:image/') && rawLogoOnDisk.length > 2048);
 
         parsed.state = sanitizeServerStateCollections(parsed.state);
         const serializedState = JSON.stringify(parsed.state);
         lastPersistedStateJson = serializedState;
 
-        if (hadPlaintextPass || hadOversizedInlineLogo) {
+        if (hadPlaintextPass || hadLegacyOrOversizedLogo) {
           try {
             writeFileAtomic(STATE_FILE, JSON.stringify(parsed, null, 2));
           } catch {
@@ -438,15 +454,16 @@ function hydrateServerStateFromFirestore(): Promise<void> {
         ? mergeServerStates(memoryStore.state, remoteState, 'admin')
         : remoteState;
 
-      // Preserve extracted logo asset if remote Firestore logo field is empty and local static asset exists
-      if (
-        (!mergedState.settings?.collegeLogoUrl ||
-          !String(mergedState.settings.collegeLogoUrl).trim()) &&
-        fs.existsSync(path.join(PUBLIC_ASSETS_DIR, 'college-logo-bd9fb83a48b7.png'))
-      ) {
+      // Ensure official Panimalar Engineering College crest is always used instead of retired/empty logo paths
+      const remoteLogo = String(mergedState.settings?.collegeLogoUrl || '').trim();
+      const shouldPushCleanedLogo =
+        !remoteLogo ||
+        remoteLogo.includes('college-logo-bd9fb83a48b7') ||
+        remoteLogo.startsWith('/assets/aistudio/');
+      if (shouldPushCleanedLogo) {
         mergedState.settings = {
           ...(mergedState.settings || {}),
-          collegeLogoUrl: '/api/assets/college-logo-bd9fb83a48b7.png',
+          collegeLogoUrl: '/assets/panimalar-crest.png',
         };
       }
 
@@ -1110,7 +1127,7 @@ async function startServer() {
       res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
       const session = resolveAdminSession(req, false);
       if (!session) {
-        res.status(401).json({ ok: false, authenticated: false });
+        res.status(200).json({ ok: true, authenticated: false });
         return;
       }
       res.json({

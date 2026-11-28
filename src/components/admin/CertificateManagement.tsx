@@ -878,7 +878,7 @@ export const CertificateManagement: React.FC = () => {
               >
                 {/* Large Centered Institutional Crest Watermark in Background */}
                 <img
-                  src="/assets/aistudio/pec-logo_afc415db.png"
+                  src="/assets/panimalar-crest.png"
                   alt=""
                   aria-hidden="true"
                   className="pointer-events-none select-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-64 sm:w-80 h-auto object-contain opacity-[0.24] z-0"
@@ -890,7 +890,7 @@ export const CertificateManagement: React.FC = () => {
                     {/* Top-Left Full Panimalar Engineering College Banner */}
                     <div className="sm:col-span-5 flex items-center gap-2.5 text-left">
                       <img
-                        src="/assets/aistudio/pec-logo_afc415db.png"
+                        src="/assets/panimalar-crest.png"
                         alt="Panimalar Engineering College Emblem"
                         className="w-12 h-12 sm:w-14 sm:h-14 object-contain shrink-0"
                       />

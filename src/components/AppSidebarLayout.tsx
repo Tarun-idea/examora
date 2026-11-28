@@ -212,15 +212,15 @@ export const AppSidebarLayout: React.FC<AppSidebarLayoutProps> = ({
         <div className="flex-1 flex items-center justify-end gap-3 min-w-0">
           <form
             onSubmit={handleGlobalSearchSubmit}
-            className="relative hidden md:block flex-1 max-w-md min-w-[200px]"
+            className="relative hidden md:block shrink-0"
           >
-            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 ml-[150px]" />
+            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search anything (exams, students, subjects)..."
-              className="w-[300px] h-[36.5875px] ml-[150px] mr-0 pl-9 pr-4 py-2 rounded-full bg-[#11153A] border border-purple-500/30 focus:border-purple-400 text-xs text-slate-100 placeholder:text-slate-400 focus:outline-none transition-colors"
+              className="w-[300px] h-[36.5875px] pl-9 pr-4 py-2 rounded-full bg-[#11153A] border border-purple-500/30 focus:border-purple-400 text-xs text-slate-100 placeholder:text-slate-400 focus:outline-none transition-colors"
             />
           </form>
 

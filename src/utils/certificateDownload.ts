@@ -18,7 +18,7 @@ export interface PrintableCertificatePayload {
   remarks?: string;
 }
 
-const DEFAULT_CREST_URL = '/assets/aistudio/pec-logo_afc415db.png';
+const DEFAULT_CREST_URL = '/assets/panimalar-crest.png';
 
 let preloadedCrestImg: HTMLImageElement | null = null;
 if (typeof window !== 'undefined' && typeof Image !== 'undefined') {
